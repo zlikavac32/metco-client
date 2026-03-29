@@ -1,0 +1,10 @@
+[package]
+name = "metco-client"
+version = "0.1.0"
+edition = "2024"
+homepage = "https://github.com/zlikavac32/metco-client"
+repository = "https://github.com/zlikavac32/metco-client"
+license = "MIT"
+description = "Client for MetCo."
+
+[dependencies]
