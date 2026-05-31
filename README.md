@@ -24,7 +24,7 @@ fn main() -> std::io::Result<()> {
     let client = ClientBuilder::default()
         .with_tag("env", "production")
         .with_tag("service", "api")
-        .connect("127.0.0.1:3232")?;
+        .build(UdpTransport::connect(([127, 0, 0, 1], 3232))?);
 
     // Send a counter
     client.send(Counter::new("requests_total", 1));
@@ -98,7 +98,7 @@ Metric-specific tags will override default tags if they share the same key.
 ```rust
 let client = ClientBuilder::default()
     .with_tag("source", "web")
-    .connect("127.0.0.1:3232")?;
+    .build(UdpTransport::connect(([127, 0, 0, 1], 3232))?);
 
 // Resulting tags: source=web, method=GET
 client.send(Counter::new("req", 1).with_tag("method", "GET"));
