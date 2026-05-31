@@ -1,6 +1,6 @@
 [package]
 name = "metco-client"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 homepage = "https://github.com/zlikavac32/metco-client"
 repository = "https://github.com/zlikavac32/metco-client"
