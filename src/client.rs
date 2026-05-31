@@ -12,6 +12,12 @@ pub struct Client<T> {
     prefix: Option<String>,
 }
 
+impl Transport for Box<dyn Transport> {
+    fn send(&self, metric: &str) {
+        self.as_ref().send(metric);
+    }
+}
+
 impl<T: Transport> Client<T> {
     /// Sends a metric to the MetCo server.
     ///

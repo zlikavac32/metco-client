@@ -34,10 +34,10 @@ pub use types::Tags;
 /// A module containing all the types and traits needed to use the library.
 pub mod prelude {
     pub use crate::client::{Client, ClientBuilder};
-    pub use crate::transport::{Transport, UdpTransport};
     pub use crate::metrics::{
         Counter, Gauge, GaugeHandle, GaugeOperation, Histogram, Metric, Timer, Timing,
         TimingResolution,
     };
+    pub use crate::transport::{Transport, UdpTransport};
     pub use crate::types::Tags;
 }
