@@ -2,7 +2,9 @@
 
 All notable changes to this project will be documented in this file.## Unreleased
 
-## Changed
+## 0.2.0 - 2026-05-31
+
+### Changed
 
 - Introduction of `Transport` trait to make `Client` generic over sending protocol [#1](https://github.com/zlikavac32/metco-client/pull/1)
 

@@ -11,7 +11,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-metco-client = "0.1.0"
+metco-client = "0.2.0"
 ```
 
 ## Quick Start
