@@ -1,5 +1,6 @@
 use crate::client::Client;
 use crate::metrics::Metric;
+use crate::transport::Transport;
 use crate::types::Tags;
 use crate::utils::serialize_name_and_tags;
 use std::borrow::Cow;
@@ -75,6 +76,7 @@ impl<'a> Metric for Gauge<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::UdpTransport;
 
     fn serialize_to_string(gauge: Gauge, tags: &Tags) -> String {
         let mut buf = String::new();
@@ -111,9 +113,8 @@ mod tests {
     #[test]
     fn test_gauge_handle_name() {
         use crate::ClientBuilder;
-        let client = ClientBuilder::default()
-            .connect(([127, 0, 0, 1], 0))
-            .unwrap();
+        let client =
+            ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 0)).unwrap());
         let handle = client.gauge("test_gauge");
         assert_eq!(handle.name, "test_gauge");
     }
@@ -122,19 +123,20 @@ mod tests {
 /// A handle for performing operations on a gauge.
 ///
 /// Created via [`Client::gauge`](crate::Client::gauge).
-pub struct GaugeHandle<'a> {
-    pub(crate) client: &'a Client,
+pub struct GaugeHandle<'a, T> {
+    pub(crate) client: &'a Client<T>,
     pub(crate) name: Cow<'a, str>,
 }
 
-impl<'a> GaugeHandle<'a> {
+impl<'a, T: Transport> GaugeHandle<'a, T> {
     /// Sets the gauge to the given value.
     ///
     /// # Examples
     ///
     /// ```rust
     /// # use metco_client::ClientBuilder;
-    /// # let client = ClientBuilder::default().connect(([127, 0, 0, 1], 3232)).unwrap();
+    /// # use metco_client::transport::UdpTransport;
+    /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
     /// let gauge = client.gauge("temperature");
     /// gauge.set(25);
     /// ```
@@ -167,7 +169,8 @@ impl<'a> GaugeHandle<'a> {
     ///
     /// ```rust
     /// # use metco_client::ClientBuilder;
-    /// # let client = ClientBuilder::default().connect(([127, 0, 0, 1], 3232)).unwrap();
+    /// # use metco_client::transport::UdpTransport;
+    /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
     /// let gauge = client.gauge("tasks");
     /// gauge.increment(2);
     /// ```

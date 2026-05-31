@@ -10,14 +10,15 @@
 //! ```
 //!
 //! ```rust
-//! use metco_client::{ClientBuilder, Counter};
+//! use metco_client::{ClientBuilder, Counter, transport::UdpTransport};
 //!
-//! let client = ClientBuilder::default().connect(([127, 0, 0, 32], 3232)).unwrap();
+//! let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 0)).unwrap());
 //! client.send(Counter::new("test", 12));
 //! ```
 
 pub mod client;
 pub mod metrics;
+pub mod transport;
 pub mod types;
 pub mod utils;
 
