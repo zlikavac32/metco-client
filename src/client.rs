@@ -1,28 +1,28 @@
 use crate::metrics::{GaugeHandle, Metric, Timer};
+use crate::transport::Transport;
 use crate::types::Tags;
 use crate::utils::write_escaped_value;
 use std::borrow::Cow;
-use std::net::{SocketAddr, UdpSocket};
 use std::time::Instant;
 
 /// MetCo client for sending metrics over UDP.
-pub struct Client {
-    socket: UdpSocket,
+pub struct Client<T> {
+    transport: T,
     tags: Tags<'static>,
     prefix: Option<String>,
 }
 
-impl Client {
+impl<T: Transport> Client<T> {
     /// Sends a metric to the MetCo server.
     ///
     /// # Examples
     ///
     /// ```rust
-    /// # use metco_client::{ClientBuilder, Counter};
-    /// # let client = ClientBuilder::default().connect(([127, 0, 0, 1], 3232)).unwrap();
+    /// # use metco_client::{ClientBuilder, Counter, transport::UdpTransport};
+    /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
     /// client.send(Counter::new("requests", 1));
     /// ```
-    pub fn send<T: Metric>(&self, metric: T) -> &Self {
+    pub fn send<M: Metric>(&self, metric: M) -> &Self {
         let mut buf = String::with_capacity(128);
 
         if let Some(prefix) = &self.prefix {
@@ -30,7 +30,7 @@ impl Client {
         }
 
         metric.serialize(&self.tags, &mut buf);
-        let _ = self.socket.send(buf.as_bytes());
+        self.transport.send(&buf);
 
         self
     }
@@ -40,13 +40,13 @@ impl Client {
     /// # Examples
     ///
     /// ```rust
-    /// # use metco_client::{ClientBuilder, Counter, Tags};
-    /// # let client = ClientBuilder::default().connect(([127, 0, 0, 1], 3232)).unwrap();
+    /// # use metco_client::{ClientBuilder, Counter, Tags, transport::UdpTransport};
+    /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
     /// let mut tags = Tags::new();
     /// tags.insert("env".into(), "prod".into());
     /// client.send_with_tags(Counter::new("requests", 1), tags);
     /// ```
-    pub fn send_with_tags<'a, T: Metric>(&self, metric: T, mut tags: Tags<'a>) -> &Self {
+    pub fn send_with_tags<'a, M: Metric>(&self, metric: M, mut tags: Tags<'a>) -> &Self {
         for (k, v) in &self.tags {
             tags.entry(k.clone()).or_insert_with(|| v.clone());
         }
@@ -58,7 +58,7 @@ impl Client {
         }
 
         metric.serialize(&tags, &mut buf);
-        let _ = self.socket.send(buf.as_bytes());
+        self.transport.send(&buf);
 
         self
     }
@@ -68,13 +68,13 @@ impl Client {
     /// # Examples
     ///
     /// ```rust
-    /// # use metco_client::ClientBuilder;
-    /// # let client = ClientBuilder::default().connect(([127, 0, 0, 1], 3232)).unwrap();
+    /// # use metco_client::{ClientBuilder, transport::UdpTransport};
+    /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
     /// let timer = client.timer("db_query");
     /// // ... perform operation ...
     /// timer.finish();
     /// ```
-    pub fn timer<'a, T: Into<Cow<'a, str>>>(&'a self, name: T) -> Timer<'a> {
+    pub fn timer<'a, N: Into<Cow<'a, str>>>(&'a self, name: N) -> Timer<'a, T> {
         Timer {
             client: self,
             now: Instant::now(),
@@ -88,13 +88,13 @@ impl Client {
     /// # Examples
     ///
     /// ```rust
-    /// # use metco_client::ClientBuilder;
-    /// # let client = ClientBuilder::default().connect(([127, 0, 0, 1], 3232)).unwrap();
+    /// # use metco_client::{ClientBuilder, transport::UdpTransport};
+    /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
     /// let gauge = client.gauge("active_users");
     /// gauge.set(42);
     /// gauge.increment(1);
     /// ```
-    pub fn gauge<'a, T: Into<Cow<'a, str>>>(&'a self, name: T) -> GaugeHandle<'a> {
+    pub fn gauge<'a, N: Into<Cow<'a, str>>>(&'a self, name: N) -> GaugeHandle<'a, T> {
         GaugeHandle {
             client: self,
             name: name.into(),
@@ -157,15 +157,13 @@ impl ClientBuilder {
     /// # Examples
     ///
     /// ```rust
-    /// # use metco_client::ClientBuilder;
+    /// use metco_client::transport::BlackHoleTransport;
+    /// use metco_client::ClientBuilder;
+    ///
     /// let client = ClientBuilder::default()
-    ///     .connect(([127, 0, 0, 1], 3232))
-    ///     .expect("failed to connect");
+    ///     .build(BlackHoleTransport::default());
     /// ```
-    pub fn connect<T: Into<SocketAddr>>(self, addr: T) -> std::io::Result<Client> {
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.connect(addr.into())?;
-
+    pub fn build<T: Transport>(self, transport: T) -> Client<T> {
         let prefix = self.prefix.map(|p| {
             let mut escaped = String::with_capacity(p.len());
 
@@ -174,17 +172,18 @@ impl ClientBuilder {
             escaped
         });
 
-        Ok(Client {
-            socket,
+        Client {
+            transport,
             tags: self.tags,
             prefix,
-        })
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::BlackHoleTransport;
 
     #[test]
     fn test_client_builder_prefix() {
@@ -197,8 +196,7 @@ mod tests {
     fn test_prefix_escaping() {
         let client = ClientBuilder::default()
             .with_prefix("app|test.")
-            .connect(([127, 0, 0, 1], 0))
-            .unwrap();
+            .build(BlackHoleTransport::default());
 
         assert_eq!(client.prefix.as_deref(), Some("app\\|test."));
     }

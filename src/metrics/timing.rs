@@ -1,5 +1,6 @@
 use crate::client::Client;
 use crate::metrics::Metric;
+use crate::transport::Transport;
 use crate::types::Tags;
 use crate::utils::serialize_name_and_tags;
 use std::borrow::Cow;
@@ -34,6 +35,7 @@ impl TimingResolution {
 mod tests {
     use super::*;
     use crate::ClientBuilder;
+    use crate::transport::UdpTransport;
 
     #[test]
     fn test_timing_resolution_encoding() {
@@ -53,9 +55,8 @@ mod tests {
 
     #[test]
     fn test_timer_with_tags() {
-        let client = ClientBuilder::default()
-            .connect(([127, 0, 0, 1], 0))
-            .unwrap();
+        let client =
+            ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 0)).unwrap());
         let timer = client.timer("test").with_tag("t1", "v1");
 
         assert_eq!(timer.name, "test");
@@ -123,26 +124,28 @@ impl<'a> Metric for Timing<'a> {
 ///
 /// ```rust
 /// # use metco_client::ClientBuilder;
-/// # let client = ClientBuilder::default().connect(([127, 0, 0, 1], 3232)).unwrap();
+/// # use metco_client::transport::UdpTransport;
+/// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
 /// let timer = client.timer("calculation");
 /// // ... complex calculation ...
 /// timer.finish();
 /// ```
-pub struct Timer<'a> {
-    pub(crate) client: &'a Client,
+pub struct Timer<'a, T> {
+    pub(crate) client: &'a Client<T>,
     pub(crate) now: Instant,
     pub(crate) name: Cow<'a, str>,
     pub(crate) tags: Option<Tags<'a>>,
 }
 
-impl<'a> Timer<'a> {
+impl<'a, T: Transport> Timer<'a, T> {
     /// Finishes the timer and sends the elapsed time to the client.
     ///
     /// # Examples
     ///
     /// ```rust
     /// # use metco_client::ClientBuilder;
-    /// # let client = ClientBuilder::default().connect(([127, 0, 0, 1], 3232)).unwrap();
+    /// # use metco_client::transport::UdpTransport;
+    /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
     /// let timer = client.timer("long_op");
     /// timer.finish();
     /// ```

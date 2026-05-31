@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::prelude::*;
+    use crate::transport::UdpTransport;
     use std::net::UdpSocket;
     use std::time::{Duration, Instant};
 
@@ -11,9 +12,8 @@ mod tests {
             .set_read_timeout(Some(Duration::from_nanos(1)))
             .unwrap();
 
-        let client = ClientBuilder::default()
-            .connect(([127, 0, 0, 32], 3231))
-            .unwrap();
+        let client =
+            ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 32], 3231)).unwrap());
 
         let now = Instant::now();
         client.timer("test").finish();
@@ -44,9 +44,8 @@ mod tests {
             .set_read_timeout(Some(Duration::from_nanos(1)))
             .unwrap();
 
-        let client = ClientBuilder::default()
-            .connect(([127, 0, 0, 32], 3232))
-            .unwrap();
+        let client =
+            ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 32], 3232)).unwrap());
 
         client
             .send(Counter::new("test", 12))
@@ -72,8 +71,7 @@ mod tests {
 
         let client = ClientBuilder::default()
             .with_prefix("app.")
-            .connect(([127, 0, 0, 32], 3233))
-            .unwrap();
+            .build(UdpTransport::connect(([127, 0, 0, 32], 3233)).unwrap());
 
         client.send(Counter::new("test", 1));
 
@@ -91,8 +89,7 @@ mod tests {
 
         let client = ClientBuilder::default()
             .with_prefix("app|test.")
-            .connect(([127, 0, 0, 32], 3234))
-            .unwrap();
+            .build(UdpTransport::connect(([127, 0, 0, 32], 3234)).unwrap());
 
         client.send(Counter::new("m1", 1));
 
