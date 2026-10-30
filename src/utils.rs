@@ -9,7 +9,8 @@ pub fn write_escaped_value(buf: &mut String, value: &str) {
 
 /// Escapes a tag name and writes it to the string.
 ///
-/// Replaces `\` and `=` with their escaped versions.
+/// Replaces `\` and `=` with their escaped versions. Unlike values, `|` and
+/// `;` are valid unescaped in tag names, and MetCo rejects `\|` and `\;` there.
 pub fn write_escaped_tag_name(buf: &mut String, name: &str) {
     write_escaped(buf, name, &['\\', '=']);
 }
@@ -117,6 +118,21 @@ mod tests {
         assert_eq!(escaped(write_escaped_tag_name, "=="), "\\=\\=");
         assert_eq!(escaped(write_escaped_tag_name, "\\="), "\\\\\\=");
         assert_eq!(escaped(write_escaped_tag_name, "čćž🦀"), "čćž🦀");
+    }
+
+    #[test]
+    fn test_escape_tag_name_keeps_value_separators() {
+        assert_eq!(escaped(write_escaped_tag_name, "a;b|c"), "a;b|c");
+    }
+
+    #[test]
+    fn test_serialize_tag_name_with_value_separators() {
+        let metric_tags = tags(&[("a;b|c", "v")]);
+
+        assert_eq!(
+            "test;a;b|c=v",
+            serialized("test", &Tags::new(), Some(&metric_tags))
+        );
     }
 
     #[test]
