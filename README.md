@@ -91,13 +91,24 @@ client.send(Timing::new(non_empty!("query_time"), 150, TimingResolution::MilliSe
 ```
 
 #### Automatic Timer
-The `Timer` measures elapsed time from its creation until `finish()` is called.
+The `Timer` measures elapsed time from its creation until `finish()` is called
+or the timer is dropped, whichever comes first. The duration is sent exactly once,
+including when the timer is dropped during a panic.
 
 ```rust
 let timer = client.timer(non_empty!("db_lookup"));
 // ... perform operation ...
 timer.finish();
+
+// Or let the end of the scope finish it.
+{
+    let _timer = client.timer(non_empty!("db_lookup"));
+    // ... perform operation ...
+}
 ```
+
+Additional tags can be attached with `with_tag` while the timer runs, or with
+`finish_with_tags` when it ends.
 
 ## Tagging
 
