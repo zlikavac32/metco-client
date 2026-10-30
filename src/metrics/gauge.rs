@@ -14,8 +14,12 @@ pub enum GaugeOperation {
     /// Removes the gauge.
     Remove,
     /// Increments the gauge by a relative value.
+    ///
+    /// A negative value is sent as a decrement.
     Increment(i64),
     /// Decrements the gauge by a relative value.
+    ///
+    /// A negative value is sent as an increment.
     Decrement(i64),
 }
 
@@ -64,10 +68,16 @@ impl Metric for Gauge<'_> {
         let _ = match self.operation {
             GaugeOperation::Set(value) => write!(buf, "{value}"),
             GaugeOperation::Remove => buf.write_char('x'),
-            GaugeOperation::Increment(value) => write!(buf, "+={value}"),
-            GaugeOperation::Decrement(value) => write!(buf, "-={value}"),
+            GaugeOperation::Increment(delta) => write_delta(buf, delta < 0, delta.unsigned_abs()),
+            GaugeOperation::Decrement(delta) => write_delta(buf, delta >= 0, delta.unsigned_abs()),
         };
     }
+}
+
+/// Writes a relative change as `+=N` or `-=N`, keeping `N` unsigned.
+fn write_delta(buf: &mut String, negative: bool, magnitude: u64) -> std::fmt::Result {
+    let sign = if negative { '-' } else { '+' };
+    write!(buf, "{sign}={magnitude}")
 }
 
 /// A handle for performing operations on a gauge.
@@ -174,6 +184,18 @@ mod tests {
             (GaugeOperation::Remove, "test|g|x"),
             (GaugeOperation::Increment(10), "test|g|+=10"),
             (GaugeOperation::Decrement(10), "test|g|-=10"),
+            (GaugeOperation::Increment(0), "test|g|+=0"),
+            (GaugeOperation::Increment(-10), "test|g|-=10"),
+            (GaugeOperation::Decrement(-10), "test|g|+=10"),
+            (
+                GaugeOperation::Increment(i64::MIN),
+                "test|g|-=9223372036854775808",
+            ),
+            (GaugeOperation::Decrement(0), "test|g|-=0"),
+            (
+                GaugeOperation::Decrement(i64::MIN),
+                "test|g|+=9223372036854775808",
+            ),
         ];
 
         for (operation, expected) in cases {

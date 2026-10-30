@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
 
 - `Timer` is now sent when dropped, as documented, instead of being silently discarded
 - `UdpTransport::connect` now works with IPv6 addresses
+- Negative gauge increments and decrements are now sent as `-=N` and `+=N` instead of `+=-N` and `-=-N`
 
 ## 0.2.1 - 2026-05-31
 
