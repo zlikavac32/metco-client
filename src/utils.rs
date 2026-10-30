@@ -226,19 +226,6 @@ mod tests {
     }
 
     #[test]
-    fn test_serialize_empty_name_and_values() {
-        assert_eq!("", serialized("", &Tags::new(), None));
-        assert_eq!(
-            "test;k=",
-            serialized("test", &Tags::new(), Some(&tags(&[("k", "")])))
-        );
-        assert_eq!(
-            "test;=v",
-            serialized("test", &Tags::new(), Some(&tags(&[("", "v")])))
-        );
-    }
-
-    #[test]
     fn test_serialize_with_escaping() {
         let metric_tags = tags(&[("k1", "v|1")]);
 

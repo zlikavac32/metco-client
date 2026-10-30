@@ -6,13 +6,15 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `NonEmptyStr` and the `non_empty!` macro for compile-time checked string literals
 - `Transport` implementations for `&T`, `Box<T>`, `Rc<T>` and `Arc<T>`, which also covers `Box<dyn Transport + Send + Sync>` and `Arc<dyn Transport>`
 - `UdpTransport::with_error_handler` for observing send errors, which were previously silently discarded
 - `Debug` implementations for metrics, clients and transports, and `Clone` for metrics and `ClientBuilder`
 
 ### Changed
 
-- **Breaking:** `Tags` is now a `BTreeMap` instead of a `HashMap`
+- **Breaking:** `Tags` is now a `BTreeMap<NonEmptyStr, NonEmptyStr>` instead of a `HashMap<Cow<str>, Cow<str>>`
+- **Breaking:** Metric names, tag names and tag values are now `NonEmptyStr`, since MetCo rejects empty ones
 - Tags passed to `GaugeHandle::*_with_tags` no longer need to outlive the client borrow
 - `Timer` now requires `T: Transport` in its definition
 

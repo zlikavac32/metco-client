@@ -1,8 +1,7 @@
 use crate::metrics::{GaugeHandle, Metric, Timer};
 use crate::transport::Transport;
-use crate::types::Tags;
+use crate::types::{NonEmptyStr, Tags};
 use crate::utils::write_escaped_value;
-use std::borrow::Cow;
 
 /// MetCo client for sending metrics through a [`Transport`].
 #[derive(Debug)]
@@ -18,9 +17,10 @@ impl<T: Transport> Client<T> {
     /// # Examples
     ///
     /// ```rust
+    /// # use metco_client::non_empty;
     /// # use metco_client::{ClientBuilder, Counter, transport::UdpTransport};
     /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
-    /// client.send(Counter::new("requests", 1));
+    /// client.send(Counter::new(non_empty!("requests"), 1));
     /// ```
     pub fn send<M: Metric>(&self, metric: M) -> &Self {
         self.dispatch(&metric, &self.tags)
@@ -31,11 +31,12 @@ impl<T: Transport> Client<T> {
     /// # Examples
     ///
     /// ```rust
+    /// # use metco_client::non_empty;
     /// # use metco_client::{ClientBuilder, Counter, Tags, transport::UdpTransport};
     /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
     /// let mut tags = Tags::new();
-    /// tags.insert("env".into(), "prod".into());
-    /// client.send_with_tags(Counter::new("requests", 1), tags);
+    /// tags.insert(non_empty!("env"), non_empty!("prod"));
+    /// client.send_with_tags(Counter::new(non_empty!("requests"), 1), tags);
     /// ```
     pub fn send_with_tags<M: Metric>(&self, metric: M, mut tags: Tags<'_>) -> &Self {
         for (k, v) in &self.tags {
@@ -63,14 +64,15 @@ impl<T: Transport> Client<T> {
     /// # Examples
     ///
     /// ```rust
+    /// # use metco_client::non_empty;
     /// # use metco_client::{ClientBuilder, transport::UdpTransport};
     /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
-    /// let timer = client.timer("db_query");
+    /// let timer = client.timer(non_empty!("db_query"));
     /// // ... perform operation ...
     /// timer.finish();
     /// ```
-    pub fn timer<'a, N: Into<Cow<'a, str>>>(&'a self, name: N) -> Timer<'a, T> {
-        Timer::new(self, name.into())
+    pub fn timer<'a>(&'a self, name: NonEmptyStr<'a>) -> Timer<'a, T> {
+        Timer::new(self, name)
     }
 
     /// Creates a handle for performing operations on a gauge.
@@ -78,14 +80,15 @@ impl<T: Transport> Client<T> {
     /// # Examples
     ///
     /// ```rust
+    /// # use metco_client::non_empty;
     /// # use metco_client::{ClientBuilder, transport::UdpTransport};
     /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
-    /// let gauge = client.gauge("active_users");
+    /// let gauge = client.gauge(non_empty!("active_users"));
     /// gauge.set(42);
     /// gauge.increment(1);
     /// ```
-    pub fn gauge<'a, N: Into<Cow<'a, str>>>(&'a self, name: N) -> GaugeHandle<'a, T> {
-        GaugeHandle::new(self, name.into())
+    pub fn gauge<'a>(&'a self, name: NonEmptyStr<'a>) -> GaugeHandle<'a, T> {
+        GaugeHandle::new(self, name)
     }
 }
 
@@ -103,16 +106,13 @@ impl ClientBuilder {
     /// # Examples
     ///
     /// ```rust
+    /// # use metco_client::non_empty;
     /// # use metco_client::ClientBuilder;
     /// let builder = ClientBuilder::default()
-    ///     .with_tag("app", "api");
+    ///     .with_tag(non_empty!("app"), non_empty!("api"));
     /// ```
-    pub fn with_tag<K, V>(mut self, name: K, value: V) -> Self
-    where
-        K: Into<Cow<'static, str>>,
-        V: Into<Cow<'static, str>>,
-    {
-        self.tags.insert(name.into(), value.into());
+    pub fn with_tag(mut self, name: NonEmptyStr<'static>, value: NonEmptyStr<'static>) -> Self {
+        self.tags.insert(name, value);
 
         self
     }
@@ -136,9 +136,10 @@ impl ClientBuilder {
     /// # Examples
     ///
     /// ```rust
+    /// # use metco_client::non_empty;
     /// # use metco_client::{ClientBuilder, Tags};
     /// let mut tags = Tags::new();
-    /// tags.insert("source".into(), "api".into());
+    /// tags.insert(non_empty!("source"), non_empty!("api"));
     ///
     /// let builder = ClientBuilder::default()
     ///     .with_tags(tags);
@@ -179,6 +180,7 @@ impl ClientBuilder {
 mod tests {
     use super::*;
     use crate::metrics::{Counter, Histogram};
+    use crate::non_empty;
     use crate::test_support::{RecordingTransport, tags};
     use crate::transport::{BlackHoleTransport, UdpTransport};
 
@@ -210,7 +212,7 @@ mod tests {
     #[test]
     fn test_client_builder_tags() {
         let builder = ClientBuilder::default()
-            .with_tag("t1", "v1")
+            .with_tag(non_empty!("t1"), non_empty!("v1"))
             .with_tags(tags(&[("t2", "v2")]));
 
         assert_eq!(builder.tags.len(), 2);
@@ -221,18 +223,24 @@ mod tests {
     #[test]
     fn test_client_builder_later_tags_override_earlier() {
         let builder = ClientBuilder::default()
-            .with_tag("a", "1")
-            .with_tag("b", "1")
+            .with_tag(non_empty!("a"), non_empty!("1"))
+            .with_tag(non_empty!("b"), non_empty!("1"))
             .with_tags(tags(&[("a", "2")]))
-            .with_tag("b", String::from("2"));
+            .with_tag(
+                non_empty!("b"),
+                NonEmptyStr::new(String::from("2")).unwrap(),
+            );
 
         assert_eq!(builder.tags, tags(&[("a", "2"), ("b", "2")]));
     }
 
     #[test]
     fn test_client_builder_clone_is_independent() {
-        let base = ClientBuilder::default().with_tag("a", "1");
-        let extended = base.clone().with_tag("b", "2").with_prefix("p.");
+        let base = ClientBuilder::default().with_tag(non_empty!("a"), non_empty!("1"));
+        let extended = base
+            .clone()
+            .with_tag(non_empty!("b"), non_empty!("2"))
+            .with_prefix("p.");
 
         assert_eq!(base.tags.len(), 1);
         assert_eq!(base.prefix, None);
@@ -244,7 +252,7 @@ mod tests {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default().build(&transport);
 
-        client.send(Counter::new("c", 1));
+        client.send(Counter::new(non_empty!("c"), 1));
 
         assert_eq!(transport.sent(), ["c|c|1"]);
     }
@@ -253,10 +261,10 @@ mod tests {
     fn test_send_applies_client_tags() {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default()
-            .with_tag("env", "prod")
+            .with_tag(non_empty!("env"), non_empty!("prod"))
             .build(&transport);
 
-        client.send(Counter::new("c", 1));
+        client.send(Counter::new(non_empty!("c"), 1));
 
         assert_eq!(transport.sent(), ["c;env=prod|c|1"]);
     }
@@ -265,11 +273,12 @@ mod tests {
     fn test_metric_tags_override_client_tags() {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default()
-            .with_tag("env", "prod")
-            .with_tag("host", "a")
+            .with_tag(non_empty!("env"), non_empty!("prod"))
+            .with_tag(non_empty!("host"), non_empty!("a"))
             .build(&transport);
 
-        client.send(Counter::new("c", 1).with_tag("env", "dev"));
+        client
+            .send(Counter::new(non_empty!("c"), 1).with_tag(non_empty!("env"), non_empty!("dev")));
 
         assert_eq!(transport.sent(), ["c;env=dev;host=a|c|1"]);
     }
@@ -278,13 +287,13 @@ mod tests {
     fn test_send_with_tags_precedence() {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default()
-            .with_tag("a", "client")
-            .with_tag("b", "client")
-            .with_tag("c", "client")
+            .with_tag(non_empty!("a"), non_empty!("client"))
+            .with_tag(non_empty!("b"), non_empty!("client"))
+            .with_tag(non_empty!("c"), non_empty!("client"))
             .build(&transport);
 
         client.send_with_tags(
-            Counter::new("m", 1).with_tag("c", "metric"),
+            Counter::new(non_empty!("m"), 1).with_tag(non_empty!("c"), non_empty!("metric")),
             tags(&[("b", "send"), ("c", "send"), ("d", "send")]),
         );
 
@@ -295,10 +304,10 @@ mod tests {
     fn test_send_with_empty_tags() {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default()
-            .with_tag("a", "1")
+            .with_tag(non_empty!("a"), non_empty!("1"))
             .build(&transport);
 
-        client.send_with_tags(Counter::new("m", 1), Tags::new());
+        client.send_with_tags(Counter::new(non_empty!("m"), 1), Tags::new());
 
         assert_eq!(transport.sent(), ["m;a=1|c|1"]);
     }
@@ -307,12 +316,15 @@ mod tests {
     fn test_send_with_tags_does_not_modify_client_tags() {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default()
-            .with_tag("a", "1")
+            .with_tag(non_empty!("a"), non_empty!("1"))
             .build(&transport);
 
         client
-            .send_with_tags(Counter::new("m", 1), tags(&[("a", "2"), ("b", "3")]))
-            .send(Counter::new("m", 1));
+            .send_with_tags(
+                Counter::new(non_empty!("m"), 1),
+                tags(&[("a", "2"), ("b", "3")]),
+            )
+            .send(Counter::new(non_empty!("m"), 1));
 
         assert_eq!(transport.sent(), ["m;a=2;b=3|c|1", "m;a=1|c|1"]);
     }
@@ -322,10 +334,10 @@ mod tests {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default()
             .with_prefix("app.")
-            .with_tag("a", "1")
+            .with_tag(non_empty!("a"), non_empty!("1"))
             .build(&transport);
 
-        client.send(Counter::new("m", 1).with_tag("b", "2"));
+        client.send(Counter::new(non_empty!("m"), 1).with_tag(non_empty!("b"), non_empty!("2")));
 
         assert_eq!(transport.sent(), ["app.m;a=1;b=2|c|1"]);
     }
@@ -335,7 +347,7 @@ mod tests {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default().with_prefix("").build(&transport);
 
-        client.send(Counter::new("m", 1));
+        client.send(Counter::new(non_empty!("m"), 1));
 
         assert_eq!(transport.sent(), ["m|c|1"]);
     }
@@ -345,7 +357,7 @@ mod tests {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default().with_prefix("a|").build(&transport);
 
-        client.send(Counter::new("|b", 1));
+        client.send(Counter::new(non_empty!("|b"), 1));
 
         assert_eq!(transport.sent(), [r"a\|\|b|c|1"]);
     }
@@ -356,9 +368,9 @@ mod tests {
         let client = ClientBuilder::default().build(&transport);
 
         client
-            .send(Counter::new("a", 1))
-            .send_with_tags(Histogram::new("b", 2), tags(&[("t", "v")]))
-            .send(Counter::new("c", 3));
+            .send(Counter::new(non_empty!("a"), 1))
+            .send_with_tags(Histogram::new(non_empty!("b"), 2), tags(&[("t", "v")]))
+            .send(Counter::new(non_empty!("c"), 3));
 
         assert_eq!(transport.sent(), ["a|c|1", "b;t=v|h|2", "c|c|3"]);
     }
@@ -369,7 +381,7 @@ mod tests {
         let client = ClientBuilder::default().build(&transport);
         let name = "n".repeat(1000);
 
-        client.send(Counter::new(name.as_str(), 1));
+        client.send(Counter::new(NonEmptyStr::new(name.as_str()).unwrap(), 1));
 
         assert_eq!(transport.sent(), [format!("{name}|c|1")]);
     }
@@ -380,7 +392,7 @@ mod tests {
         let boxed: Box<dyn Transport + '_> = Box::new(&transport);
         let client = ClientBuilder::default().build(boxed);
 
-        client.send(Counter::new("m", 1));
+        client.send(Counter::new(non_empty!("m"), 1));
 
         assert_eq!(transport.sent(), ["m|c|1"]);
     }

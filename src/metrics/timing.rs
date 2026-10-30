@@ -1,9 +1,8 @@
 use crate::client::Client;
 use crate::metrics::Metric;
 use crate::transport::Transport;
-use crate::types::Tags;
+use crate::types::{NonEmptyStr, Tags};
 use crate::utils::serialize_name_and_tags;
-use std::borrow::Cow;
 use std::fmt::Write;
 use std::time::Instant;
 
@@ -40,10 +39,11 @@ impl TimingResolution {
 /// # Examples
 ///
 /// ```rust
+/// # use metco_client::non_empty;
 /// use metco_client::{Timing, TimingResolution, Tags};
 /// # use metco_client::Metric;
 ///
-/// let timing = Timing::new("query_time", 150, TimingResolution::MilliSeconds);
+/// let timing = Timing::new(non_empty!("query_time"), 150, TimingResolution::MilliSeconds);
 ///
 /// let mut buf = String::new();
 /// timing.serialize(&Tags::default(), &mut buf);
@@ -51,7 +51,7 @@ impl TimingResolution {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct Timing<'a> {
-    name: Cow<'a, str>,
+    name: NonEmptyStr<'a>,
     duration: u64,
     resolution: TimingResolution,
     tags: Option<Tags<'a>>,
@@ -59,13 +59,9 @@ pub struct Timing<'a> {
 
 impl<'a> Timing<'a> {
     /// Creates a new timing metric with the given name, duration, and resolution.
-    pub fn new<T: Into<Cow<'a, str>>>(
-        name: T,
-        duration: u64,
-        resolution: TimingResolution,
-    ) -> Self {
+    pub fn new(name: NonEmptyStr<'a>, duration: u64, resolution: TimingResolution) -> Self {
         Self {
-            name: name.into(),
+            name,
             duration,
             resolution,
             tags: None,
@@ -93,15 +89,16 @@ impl Metric for Timing<'_> {
 /// # Examples
 ///
 /// ```rust
+/// # use metco_client::non_empty;
 /// # use metco_client::ClientBuilder;
 /// # use metco_client::transport::UdpTransport;
 /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
-/// let timer = client.timer("calculation");
+/// let timer = client.timer(non_empty!("calculation"));
 /// // ... complex calculation ...
 /// timer.finish();
 ///
 /// {
-///     let _timer = client.timer("scoped_calculation");
+///     let _timer = client.timer(non_empty!("scoped_calculation"));
 ///     // ... complex calculation ...
 /// } // duration is sent here
 /// ```
@@ -110,12 +107,12 @@ impl Metric for Timing<'_> {
 pub struct Timer<'a, T: Transport> {
     client: &'a Client<T>,
     start: Instant,
-    name: Cow<'a, str>,
+    name: NonEmptyStr<'a>,
     tags: Option<Tags<'a>>,
 }
 
 impl<'a, T: Transport> Timer<'a, T> {
-    pub(crate) fn new(client: &'a Client<T>, name: Cow<'a, str>) -> Self {
+    pub(crate) fn new(client: &'a Client<T>, name: NonEmptyStr<'a>) -> Self {
         Self {
             client,
             start: Instant::now(),
@@ -129,10 +126,11 @@ impl<'a, T: Transport> Timer<'a, T> {
     /// # Examples
     ///
     /// ```rust
+    /// # use metco_client::non_empty;
     /// # use metco_client::ClientBuilder;
     /// # use metco_client::transport::UdpTransport;
     /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
-    /// let timer = client.timer("long_op");
+    /// let timer = client.timer(non_empty!("long_op"));
     /// timer.finish();
     /// ```
     pub fn finish(self) {
@@ -150,7 +148,7 @@ impl<'a, T: Transport> Timer<'a, T> {
 impl<T: Transport> Drop for Timer<'_, T> {
     fn drop(&mut self) {
         let elapsed = u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let timing = Timing::new(self.name.as_ref(), elapsed, TimingResolution::NanoSeconds);
+        let timing = Timing::new(self.name.borrowed(), elapsed, TimingResolution::NanoSeconds);
 
         match self.tags.take() {
             Some(tags) => self.client.send(timing.with_tags(tags)),
@@ -163,6 +161,7 @@ impl<T: Transport> Drop for Timer<'_, T> {
 mod tests {
     use super::*;
     use crate::ClientBuilder;
+    use crate::non_empty;
     use crate::test_support::{RecordingTransport, serialize, tags};
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::time::Duration;
@@ -200,7 +199,11 @@ mod tests {
     fn test_timing_serialization() {
         assert_eq!(
             "test|t|100|ms",
-            serialize(&Timing::new("test", 100, TimingResolution::MilliSeconds))
+            serialize(&Timing::new(
+                non_empty!("test"),
+                100,
+                TimingResolution::MilliSeconds
+            ))
         );
     }
 
@@ -214,7 +217,10 @@ mod tests {
         ];
 
         for (resolution, expected) in cases {
-            assert_eq!(expected, serialize(&Timing::new("test", 7, resolution)));
+            assert_eq!(
+                expected,
+                serialize(&Timing::new(non_empty!("test"), 7, resolution))
+            );
         }
     }
 
@@ -222,12 +228,16 @@ mod tests {
     fn test_timing_value_bounds() {
         assert_eq!(
             "test|t|0|ns",
-            serialize(&Timing::new("test", 0, TimingResolution::NanoSeconds))
+            serialize(&Timing::new(
+                non_empty!("test"),
+                0,
+                TimingResolution::NanoSeconds
+            ))
         );
         assert_eq!(
             "test|t|18446744073709551615|ns",
             serialize(&Timing::new(
-                "test",
+                non_empty!("test"),
                 u64::MAX,
                 TimingResolution::NanoSeconds
             ))
@@ -237,7 +247,9 @@ mod tests {
     #[test]
     fn test_timer_with_tags() {
         let client = ClientBuilder::default().build(RecordingTransport::default());
-        let timer = client.timer("test").with_tag("t1", "v1");
+        let timer = client
+            .timer(non_empty!("test"))
+            .with_tag(non_empty!("t1"), non_empty!("v1"));
 
         assert_eq!(timer.name, "test");
         assert_eq!(timer.tags.as_ref().unwrap().get("t1").unwrap(), "v1");
@@ -248,10 +260,10 @@ mod tests {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default().build(&transport);
 
-        client.timer("plain").finish();
+        client.timer(non_empty!("plain")).finish();
         client
-            .timer("tagged")
-            .with_tag("t1", "v1")
+            .timer(non_empty!("tagged"))
+            .with_tag(non_empty!("t1"), non_empty!("v1"))
             .finish_with_tags(tags(&[("t2", "v2")]));
 
         assert_eq!(sent_names(&transport), ["plain", "tagged;t1=v1;t2=v2"]);
@@ -263,7 +275,7 @@ mod tests {
         let client = ClientBuilder::default().build(&transport);
 
         {
-            let _timer = client.timer("scoped");
+            let _timer = client.timer(non_empty!("scoped"));
             assert!(transport.sent().is_empty());
         }
 
@@ -276,7 +288,7 @@ mod tests {
         let client = ClientBuilder::default().build(&transport);
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let _timer = client.timer("panicking");
+            let _timer = client.timer(non_empty!("panicking"));
             panic!("expected panic");
         }));
 
@@ -289,7 +301,7 @@ mod tests {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default().build(&transport);
 
-        let timer = client.timer("sleep");
+        let timer = client.timer(non_empty!("sleep"));
         std::thread::sleep(Duration::from_millis(5));
         timer.finish();
 
@@ -304,9 +316,9 @@ mod tests {
         let client = ClientBuilder::default().build(&transport);
 
         client
-            .timer("t")
-            .with_tag("a", "timer")
-            .with_tag("b", "timer")
+            .timer(non_empty!("t"))
+            .with_tag(non_empty!("a"), non_empty!("timer"))
+            .with_tag(non_empty!("b"), non_empty!("timer"))
             .finish_with_tags(tags(&[("b", "finish")]));
 
         assert_eq!(sent_names(&transport), ["t;a=timer;b=finish"]);
@@ -317,8 +329,10 @@ mod tests {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default().build(&transport);
 
-        client.timer("t").finish_with_tags(tags(&[("a", "1")]));
-        client.timer("t").finish_with_tags(Tags::new());
+        client
+            .timer(non_empty!("t"))
+            .finish_with_tags(tags(&[("a", "1")]));
+        client.timer(non_empty!("t")).finish_with_tags(Tags::new());
 
         assert_eq!(sent_names(&transport), ["t;a=1", "t"]);
     }
@@ -328,13 +342,18 @@ mod tests {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default()
             .with_prefix("app.")
-            .with_tag("env", "prod")
-            .with_tag("host", "a")
+            .with_tag(non_empty!("env"), non_empty!("prod"))
+            .with_tag(non_empty!("host"), non_empty!("a"))
             .build(&transport);
 
-        client.timer("t").finish();
-        client.timer("t").with_tag("host", "b").finish();
-        client.timer("t").finish_with_tags(tags(&[("host", "c")]));
+        client.timer(non_empty!("t")).finish();
+        client
+            .timer(non_empty!("t"))
+            .with_tag(non_empty!("host"), non_empty!("b"))
+            .finish();
+        client
+            .timer(non_empty!("t"))
+            .finish_with_tags(tags(&[("host", "c")]));
 
         assert_eq!(
             sent_names(&transport),
@@ -351,7 +370,7 @@ mod tests {
         let transport = RecordingTransport::default();
         let client = ClientBuilder::default().build(&transport);
 
-        client.timer("a|b").finish();
+        client.timer(non_empty!("a|b")).finish();
 
         assert_eq!(sent_names(&transport), [r"a\|b"]);
     }

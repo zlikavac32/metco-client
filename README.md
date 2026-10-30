@@ -22,18 +22,31 @@ use metco_client::prelude::*;
 fn main() -> std::io::Result<()> {
     // Create a client with default tags
     let client = ClientBuilder::default()
-        .with_tag("env", "production")
-        .with_tag("service", "api")
+        .with_tag(non_empty!("env"), non_empty!("production"))
+        .with_tag(non_empty!("service"), non_empty!("api"))
         .build(UdpTransport::connect(([127, 0, 0, 1], 3232))?);
 
     // Send a counter
-    client.send(Counter::new("requests_total", 1));
+    client.send(Counter::new(non_empty!("requests_total"), 1));
 
     // Send a counter with extra tags
-    client.send(Counter::new("errors_total", 1).with_tag("type", "auth"));
+    client.send(
+        Counter::new(non_empty!("errors_total"), 1).with_tag(non_empty!("type"), non_empty!("auth")),
+    );
 
     Ok(())
 }
+```
+
+## Names and Tag Values
+
+MetCo rejects metrics whose name, tag name or tag value is empty, so these are
+passed as `NonEmptyStr`. String literals are checked at compile time with the
+`non_empty!` macro, and other strings are checked at runtime:
+
+```rust
+let literal = non_empty!("requests_total");
+let dynamic = NonEmptyStr::new(format!("requests_{}", region))?;
 ```
 
 ## Metric Types
@@ -42,14 +55,14 @@ fn main() -> std::io::Result<()> {
 Used to track occurrences of events. They are monotonic and can only be incremented.
 
 ```rust
-client.send(Counter::new("button_clicks", 1));
+client.send(Counter::new(non_empty!("button_clicks"), 1));
 ```
 
 ### Gauges
 Gauges represent a value that can go up and down.
 
 ```rust
-let gauge = client.gauge("active_users");
+let gauge = client.gauge(non_empty!("active_users"));
 
 // Set absolute value
 gauge.set(42);
@@ -66,7 +79,7 @@ gauge.remove();
 Used to track the distribution of values (e.g., request sizes).
 
 ```rust
-client.send(Histogram::new("response_size_bytes", 1024));
+client.send(Histogram::new(non_empty!("response_size_bytes"), 1024));
 ```
 
 ### Timings & Timers
@@ -74,14 +87,14 @@ Used to measure the duration of events.
 
 #### Manual Timing
 ```rust
-client.send(Timing::new("query_time", 150, TimingResolution::MilliSeconds));
+client.send(Timing::new(non_empty!("query_time"), 150, TimingResolution::MilliSeconds));
 ```
 
 #### Automatic Timer
 The `Timer` measures elapsed time from its creation until `finish()` is called.
 
 ```rust
-let timer = client.timer("db_lookup");
+let timer = client.timer(non_empty!("db_lookup"));
 // ... perform operation ...
 timer.finish();
 ```
@@ -97,14 +110,14 @@ Metric-specific tags will override default tags if they share the same key.
 
 ```rust
 let client = ClientBuilder::default()
-    .with_tag("source", "web")
+    .with_tag(non_empty!("source"), non_empty!("web"))
     .build(UdpTransport::connect(([127, 0, 0, 1], 3232))?);
 
 // Resulting tags: source=web, method=GET
-client.send(Counter::new("req", 1).with_tag("method", "GET"));
+client.send(Counter::new(non_empty!("req"), 1).with_tag(non_empty!("method"), non_empty!("GET")));
 
 // Overriding: Resulting tags: source=cli
-client.send(Counter::new("req", 1).with_tag("source", "cli"));
+client.send(Counter::new(non_empty!("req"), 1).with_tag(non_empty!("source"), non_empty!("cli")));
 ```
 
 ## Character Escaping

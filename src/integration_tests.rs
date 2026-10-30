@@ -37,7 +37,7 @@ fn test_timer_is_sent() {
     let (server, client) = server_and_client(ClientBuilder::default());
 
     let now = Instant::now();
-    client.timer("test").finish();
+    client.timer(non_empty!("test")).finish();
     let duration = now.elapsed();
 
     let payload = receive(&server);
@@ -55,8 +55,8 @@ fn test_client_and_send_data() {
     let (server, client) = server_and_client(ClientBuilder::default());
 
     client
-        .send(Counter::new("test", 12))
-        .send(Histogram::new("test2", 123));
+        .send(Counter::new(non_empty!("test"), 12))
+        .send(Histogram::new(non_empty!("test2"), 123));
 
     assert_eq!("test|c|12", receive(&server));
     assert_eq!("test2|h|123", receive(&server));
@@ -67,7 +67,7 @@ fn test_client_sends_over_ipv6() {
     let (server, client) =
         server_and_client_on(ClientBuilder::default(), Ipv6Addr::LOCALHOST.into());
 
-    client.send(Counter::new("test", 1));
+    client.send(Counter::new(non_empty!("test"), 1));
 
     assert_eq!("test|c|1", receive(&server));
 }
@@ -76,7 +76,7 @@ fn test_client_sends_over_ipv6() {
 fn test_client_with_prefix_is_sent() {
     let (server, client) = server_and_client(ClientBuilder::default().with_prefix("app."));
 
-    client.send(Counter::new("test", 1));
+    client.send(Counter::new(non_empty!("test"), 1));
 
     assert_eq!("app.test|c|1", receive(&server));
 }
@@ -85,40 +85,52 @@ fn test_client_with_prefix_is_sent() {
 fn test_client_with_escaped_prefix_is_sent() {
     let (server, client) = server_and_client(ClientBuilder::default().with_prefix("app|test."));
 
-    client.send(Counter::new("m1", 1));
+    client.send(Counter::new(non_empty!("m1"), 1));
 
     assert_eq!("app\\|test.m1|c|1", receive(&server));
 }
 
 #[test]
 fn counter_is_properly_serialized() {
-    assert_eq!("test|c|124", serialize(Counter::new("test", 124)));
+    assert_eq!(
+        "test|c|124",
+        serialize(Counter::new(non_empty!("test"), 124))
+    );
     assert_eq!(
         "test;t1=v1|c|124",
-        serialize(Counter::new("test", 124).with_tag("t1", "v1"))
+        serialize(
+            Counter::new(non_empty!("test"), 124).with_tag(non_empty!("t1"), non_empty!("v1"))
+        )
     );
 }
 
 #[test]
 fn histogram_is_properly_serialized() {
-    assert_eq!("test|h|124", serialize(Histogram::new("test", 124)));
+    assert_eq!(
+        "test|h|124",
+        serialize(Histogram::new(non_empty!("test"), 124))
+    );
 }
 
 #[test]
 fn timing_is_properly_serialized() {
     assert_eq!(
         "test|t|124|us",
-        serialize(Timing::new("test", 124, TimingResolution::MicroSeconds))
+        serialize(Timing::new(
+            non_empty!("test"),
+            124,
+            TimingResolution::MicroSeconds
+        ))
     );
 }
 
 #[test]
 fn test_tag_escaping_in_serialization() {
-    let tags = Tags::from([("k=1".into(), "v;1".into())]);
+    let tags = Tags::from([(non_empty!("k=1"), non_empty!("v;1"))]);
 
     assert_eq!(
         "test;k\\=1=v\\;1|c|1",
-        serialize(Counter::new("test", 1).with_tags(tags))
+        serialize(Counter::new(non_empty!("test"), 1).with_tags(tags))
     );
 }
 
@@ -126,7 +138,7 @@ fn test_tag_escaping_in_serialization() {
 fn gauge_is_properly_serialized() {
     assert_eq!(
         "test|g|123",
-        serialize(Gauge::new("test", GaugeOperation::Set(123)))
+        serialize(Gauge::new(non_empty!("test"), GaugeOperation::Set(123)))
     );
 }
 
@@ -135,14 +147,14 @@ fn test_full_metric_is_sent_over_udp() {
     let (server, client) = server_and_client(
         ClientBuilder::default()
             .with_prefix("app.")
-            .with_tag("env", "prod")
-            .with_tag("host", "a"),
+            .with_tag(non_empty!("env"), non_empty!("prod"))
+            .with_tag(non_empty!("host"), non_empty!("a")),
     );
 
     client.send(
-        Counter::new("req|total", 3)
-            .with_tag("host", "b")
-            .with_tag("k=v", "x;y"),
+        Counter::new(non_empty!("req|total"), 3)
+            .with_tag(non_empty!("host"), non_empty!("b"))
+            .with_tag(non_empty!("k=v"), non_empty!("x;y")),
     );
 
     assert_eq!(
@@ -153,9 +165,14 @@ fn test_full_metric_is_sent_over_udp() {
 
 #[test]
 fn test_unicode_is_sent_over_udp() {
-    let (server, client) = server_and_client(ClientBuilder::default().with_tag("grad", "Čakovec"));
+    let (server, client) = server_and_client(
+        ClientBuilder::default().with_tag(non_empty!("grad"), non_empty!("Čakovec")),
+    );
 
-    client.send(Gauge::new("temperatura_°C", GaugeOperation::Set(-5)));
+    client.send(Gauge::new(
+        non_empty!("temperatura_°C"),
+        GaugeOperation::Set(-5),
+    ));
 
     assert_eq!("temperatura_°C;grad=Čakovec|g|-5", receive(&server));
 }
@@ -165,7 +182,7 @@ fn test_large_metric_is_sent_over_udp() {
     let (server, client) = server_and_client(ClientBuilder::default());
     let name = "n".repeat(10_000);
 
-    client.send(Counter::new(name.as_str(), 1));
+    client.send(Counter::new(NonEmptyStr::new(name.as_str()).unwrap(), 1));
 
     assert_eq!(format!("{name}|c|1"), receive(&server));
 }
@@ -174,13 +191,13 @@ fn test_large_metric_is_sent_over_udp() {
 fn test_gauge_and_timer_handles_send_over_udp() {
     let (server, client) = server_and_client(ClientBuilder::default());
 
-    let gauge = client.gauge("g");
+    let gauge = client.gauge(non_empty!("g"));
     gauge.set(1);
     gauge.increment(2);
     gauge.decrement(-3);
     gauge.remove();
     {
-        let _timer = client.timer("t");
+        let _timer = client.timer(non_empty!("t"));
     }
 
     assert_eq!("g|g|1", receive(&server));
@@ -197,7 +214,12 @@ fn test_client_can_be_shared_between_threads() {
     std::thread::scope(|scope| {
         for i in 0..4 {
             let client = &client;
-            scope.spawn(move || client.send(Counter::new(format!("thread{i}"), 1)));
+            scope.spawn(move || {
+                client.send(Counter::new(
+                    NonEmptyStr::new(format!("thread{i}")).unwrap(),
+                    1,
+                ))
+            });
         }
     });
 

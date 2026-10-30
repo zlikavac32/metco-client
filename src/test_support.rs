@@ -1,6 +1,6 @@
 use crate::metrics::Metric;
 use crate::transport::Transport;
-use crate::types::Tags;
+use crate::types::{NonEmptyStr, Tags};
 use std::sync::Mutex;
 
 /// A transport that records every metric sent through it.
@@ -33,6 +33,13 @@ pub fn serialize(metric: &impl Metric) -> String {
 }
 
 /// Builds tags from `(name, value)` pairs.
+///
+/// # Panics
+///
+/// Panics if any name or value is empty.
 pub fn tags<'a>(pairs: &[(&'a str, &'a str)]) -> Tags<'a> {
-    pairs.iter().map(|&(k, v)| (k.into(), v.into())).collect()
+    pairs
+        .iter()
+        .map(|&(k, v)| (NonEmptyStr::new(k).unwrap(), NonEmptyStr::new(v).unwrap()))
+        .collect()
 }
