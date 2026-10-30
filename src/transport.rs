@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
@@ -41,12 +42,24 @@ impl Transport for BlackHoleTransport {
     fn send(&self, _metric: &str) {}
 }
 
+type ErrorHandler = Box<dyn Fn(&io::Error) + Send + Sync>;
+
 /// A transport that sends each metric as a single UDP datagram.
 ///
-/// Send errors are ignored.
-#[derive(Debug)]
+/// Send errors are ignored unless an error handler is registered with
+/// [`UdpTransport::with_error_handler`].
 pub struct UdpTransport {
     socket: UdpSocket,
+    on_error: Option<ErrorHandler>,
+}
+
+impl fmt::Debug for UdpTransport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UdpTransport")
+            .field("socket", &self.socket)
+            .field("on_error", &self.on_error.is_some())
+            .finish()
+    }
 }
 
 impl UdpTransport {
@@ -66,13 +79,37 @@ impl UdpTransport {
         let socket = UdpSocket::bind(local)?;
         socket.connect(addr)?;
 
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            on_error: None,
+        })
+    }
+
+    /// Registers a handler that is called whenever sending a metric fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use metco_client::transport::UdpTransport;
+    /// let transport = UdpTransport::connect(([127, 0, 0, 1], 3232))
+    ///     .unwrap()
+    ///     .with_error_handler(|err| eprintln!("failed to send metric: {err}"));
+    /// ```
+    #[must_use]
+    pub fn with_error_handler<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&io::Error) + Send + Sync + 'static,
+    {
+        self.on_error = Some(Box::new(handler));
+        self
     }
 }
 
 impl Transport for UdpTransport {
     fn send(&self, metric: &str) {
-        let _ = self.socket.send(metric.as_bytes());
+        if let (Err(err), Some(on_error)) = (self.socket.send(metric.as_bytes()), &self.on_error) {
+            on_error(&err);
+        }
     }
 }
 
@@ -92,5 +129,25 @@ mod tests {
         ClientBuilder::default().build(Rc::new(BlackHoleTransport));
         ClientBuilder::default().build(&*shared);
         ClientBuilder::default().build(shared);
+    }
+
+    #[test]
+    fn test_udp_send_errors_are_reported() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let errors = Arc::new(AtomicUsize::new(0));
+        let transport = UdpTransport::connect(([127, 0, 0, 1], 3232))
+            .unwrap()
+            .with_error_handler({
+                let errors = Arc::clone(&errors);
+                move |_| {
+                    errors.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+        // Larger than the maximum UDP payload, so sending always fails.
+        transport.send(&"x".repeat(70_000));
+
+        assert_eq!(errors.load(Ordering::Relaxed), 1);
     }
 }

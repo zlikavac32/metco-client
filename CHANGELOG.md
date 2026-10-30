@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - `Transport` implementations for `&T`, `Box<T>`, `Rc<T>` and `Arc<T>`, which also covers `Box<dyn Transport + Send + Sync>` and `Arc<dyn Transport>`
+- `UdpTransport::with_error_handler` for observing send errors, which were previously silently discarded
 - `Debug` implementations for metrics, clients and transports, and `Clone` for metrics and `ClientBuilder`
 
 ### Changed
