@@ -223,7 +223,7 @@ mod tests {
         let names = recorded_names(&transport);
         assert_eq!(names.len(), 2);
         assert_eq!(names[0], "plain");
-        assert!(names[1] == "tagged;t1=v1;t2=v2" || names[1] == "tagged;t2=v2;t1=v1");
+        assert_eq!(names[1], "tagged;t1=v1;t2=v2");
     }
 
     #[test]

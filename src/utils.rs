@@ -35,7 +35,8 @@ fn write_tag(buf: &mut String, name: &str, value: &str) {
 /// Serializes a metric name and its tags into the string.
 ///
 /// Tags from `tags` take precedence over tags with the same name in
-/// `default_tags`.
+/// `default_tags`. Tags are written sorted by name, so the output is
+/// deterministic.
 ///
 /// This is a helper function used by various metric implementations to
 /// ensure consistent serialization of names and tags.
@@ -47,14 +48,15 @@ pub fn serialize_name_and_tags(
 ) {
     write_escaped_value(buf, name);
 
-    for (name, value) in tags.into_iter().flatten() {
-        write_tag(buf, name, value);
-    }
+    let inherited = default_tags
+        .iter()
+        .filter(|(name, _)| tags.is_none_or(|t| !t.contains_key(*name)));
 
-    for (name, value) in default_tags {
-        if tags.is_none_or(|t| !t.contains_key(name)) {
-            write_tag(buf, name, value);
-        }
+    let mut merged: Vec<_> = tags.into_iter().flatten().chain(inherited).collect();
+    merged.sort_unstable_by_key(|(name, _)| *name);
+
+    for (name, value) in merged {
+        write_tag(buf, name, value);
     }
 }
 
@@ -96,13 +98,27 @@ mod tests {
         let metric_tags = Tags::from([("k2".into(), "v2".into())]);
         let mut buf = String::new();
         serialize_name_and_tags(&mut buf, "test", &default_tags, Some(&metric_tags));
-        assert!(buf == "test;k2=v2;k1=v1" || buf == "test;k1=v1;k2=v2");
+        assert_eq!("test;k1=v1;k2=v2", buf);
 
         // Metric tag overrides default tag
         let override_tags = Tags::from([("k1".into(), "v1_new".into())]);
         let mut buf = String::new();
         serialize_name_and_tags(&mut buf, "test", &default_tags, Some(&override_tags));
         assert_eq!("test;k1=v1_new", buf);
+    }
+
+    #[test]
+    fn test_serialize_tags_sorted_by_name() {
+        let default_tags = Tags::from([("b".into(), "1".into()), ("d".into(), "2".into())]);
+        let metric_tags = Tags::from([
+            ("c".into(), "3".into()),
+            ("a".into(), "4".into()),
+            ("d".into(), "5".into()),
+        ]);
+
+        let mut buf = String::new();
+        serialize_name_and_tags(&mut buf, "test", &default_tags, Some(&metric_tags));
+        assert_eq!("test;a=4;b=1;c=3;d=5", buf);
     }
 
     #[test]
