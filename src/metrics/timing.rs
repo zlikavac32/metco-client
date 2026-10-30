@@ -86,7 +86,9 @@ impl Metric for Timing<'_> {
 /// A timer for measuring durations.
 ///
 /// Created via [`Client::timer`](crate::Client::timer).
-/// The duration is sent to the client when the timer is dropped or when [`Timer::finish`] is called.
+/// The duration is sent to the client exactly once, either when [`Timer::finish`] or
+/// [`Timer::finish_with_tags`] is called, or when the timer is dropped (including
+/// during unwinding).
 ///
 /// # Examples
 ///
@@ -97,10 +99,15 @@ impl Metric for Timing<'_> {
 /// let timer = client.timer("calculation");
 /// // ... complex calculation ...
 /// timer.finish();
+///
+/// {
+///     let _timer = client.timer("scoped_calculation");
+///     // ... complex calculation ...
+/// } // duration is sent here
 /// ```
 #[derive(Debug)]
-#[must_use = "the duration is only sent when `finish` or `finish_with_tags` is called"]
-pub struct Timer<'a, T> {
+#[must_use = "dropping the timer immediately sends a near-zero duration"]
+pub struct Timer<'a, T: Transport> {
     client: &'a Client<T>,
     start: Instant,
     name: Cow<'a, str>,
@@ -129,27 +136,27 @@ impl<'a, T: Transport> Timer<'a, T> {
     /// timer.finish();
     /// ```
     pub fn finish(self) {
-        let client = self.client;
-        client.send(self.into_timing());
+        drop(self);
     }
 
     /// Finishes the timer and sends the elapsed time to the client with additional tags.
     pub fn finish_with_tags(self, tags: Tags<'a>) {
-        let client = self.client;
-        client.send(self.into_timing().with_tags(tags));
-    }
-
-    fn into_timing(self) -> Timing<'a> {
-        let elapsed = u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let timing = Timing::new(self.name, elapsed, TimingResolution::NanoSeconds);
-
-        match self.tags {
-            Some(tags) => timing.with_tags(tags),
-            None => timing,
-        }
+        drop(self.with_tags(tags));
     }
 
     tags_support!();
+}
+
+impl<T: Transport> Drop for Timer<'_, T> {
+    fn drop(&mut self) {
+        let elapsed = u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let timing = Timing::new(self.name.as_ref(), elapsed, TimingResolution::NanoSeconds);
+
+        match self.tags.take() {
+            Some(tags) => self.client.send(timing.with_tags(tags)),
+            None => self.client.send(timing),
+        };
+    }
 }
 
 #[cfg(test)]
@@ -157,6 +164,25 @@ mod tests {
     use super::*;
     use crate::ClientBuilder;
     use crate::transport::BlackHoleTransport;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct RecordingTransport(RefCell<Vec<String>>);
+
+    impl Transport for RecordingTransport {
+        fn send(&self, metric: &str) {
+            self.0.borrow_mut().push(metric.to_owned());
+        }
+    }
+
+    fn recorded_names(transport: &RecordingTransport) -> Vec<String> {
+        transport
+            .0
+            .borrow()
+            .iter()
+            .map(|m| m.split('|').next().unwrap().to_owned())
+            .collect()
+    }
 
     #[test]
     fn test_timing_resolution_encoding() {
@@ -181,5 +207,34 @@ mod tests {
 
         assert_eq!(timer.name, "test");
         assert_eq!(timer.tags.as_ref().unwrap().get("t1").unwrap(), "v1");
+    }
+
+    #[test]
+    fn test_timer_is_sent_once_on_finish() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+
+        client.timer("plain").finish();
+        client
+            .timer("tagged")
+            .with_tag("t1", "v1")
+            .finish_with_tags(Tags::from([("t2".into(), "v2".into())]));
+
+        let names = recorded_names(&transport);
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0], "plain");
+        assert!(names[1] == "tagged;t1=v1;t2=v2" || names[1] == "tagged;t2=v2;t1=v1");
+    }
+
+    #[test]
+    fn test_timer_is_sent_on_drop() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+
+        {
+            let _timer = client.timer("scoped");
+        }
+
+        assert_eq!(recorded_names(&transport), ["scoped"]);
     }
 }

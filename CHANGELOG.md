@@ -12,6 +12,11 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - Tags passed to `GaugeHandle::*_with_tags` no longer need to outlive the client borrow
+- `Timer` now requires `T: Transport` in its definition
+
+### Fixed
+
+- `Timer` is now sent when dropped, as documented, instead of being silently discarded
 
 ## 0.2.1 - 2026-05-31
 
