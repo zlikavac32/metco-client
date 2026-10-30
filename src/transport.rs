@@ -117,6 +117,29 @@ impl Transport for UdpTransport {
 mod tests {
     use super::*;
     use crate::ClientBuilder;
+    use crate::test_support::RecordingTransport;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Returns an error handler that counts calls, and the counter it updates.
+    fn counting_handler() -> (
+        Arc<AtomicUsize>,
+        impl Fn(&io::Error) + Send + Sync + 'static,
+    ) {
+        let errors = Arc::new(AtomicUsize::new(0));
+        let handler = {
+            let errors = Arc::clone(&errors);
+            move |_: &io::Error| {
+                errors.fetch_add(1, Ordering::Relaxed);
+            }
+        };
+
+        (errors, handler)
+    }
+
+    /// Larger than the maximum UDP payload, so sending always fails.
+    fn oversized_metric() -> String {
+        "x".repeat(70_000)
+    }
 
     #[test]
     fn test_smart_pointers_are_transports() {
@@ -132,22 +155,99 @@ mod tests {
     }
 
     #[test]
-    fn test_udp_send_errors_are_reported() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
+    fn test_smart_pointers_forward_to_inner_transport() {
+        let transport = RecordingTransport::default();
 
-        let errors = Arc::new(AtomicUsize::new(0));
+        <&RecordingTransport as Transport>::send(&&transport, "ref");
+        Box::new(&transport).send("box");
+        Rc::new(&transport).send("rc");
+        Arc::new(&transport).send("arc");
+        (Box::new(&transport) as Box<dyn Transport + '_>).send("dyn");
+        Box::new(Box::new(&transport)).send("nested");
+
+        assert_eq!(
+            transport.sent(),
+            ["ref", "box", "rc", "arc", "dyn", "nested"]
+        );
+    }
+
+    #[test]
+    fn test_black_hole_transport_accepts_anything() {
+        BlackHoleTransport.send("");
+        BlackHoleTransport.send(&oversized_metric());
+    }
+
+    #[test]
+    fn test_udp_connect_binds_matching_address_family() {
+        let v4 = UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap();
+        let v6 = UdpTransport::connect((Ipv6Addr::LOCALHOST, 3232)).unwrap();
+
+        assert!(v4.socket.local_addr().unwrap().is_ipv4());
+        assert!(v6.socket.local_addr().unwrap().is_ipv6());
+    }
+
+    #[test]
+    fn test_udp_send_errors_are_reported() {
+        let (errors, handler) = counting_handler();
         let transport = UdpTransport::connect(([127, 0, 0, 1], 3232))
             .unwrap()
-            .with_error_handler({
-                let errors = Arc::clone(&errors);
-                move |_| {
-                    errors.fetch_add(1, Ordering::Relaxed);
-                }
-            });
+            .with_error_handler(handler);
 
-        // Larger than the maximum UDP payload, so sending always fails.
-        transport.send(&"x".repeat(70_000));
+        transport.send(&oversized_metric());
+        transport.send(&oversized_metric());
 
-        assert_eq!(errors.load(Ordering::Relaxed), 1);
+        assert_eq!(errors.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_udp_error_handler_is_not_called_on_success() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let (errors, handler) = counting_handler();
+        let transport = UdpTransport::connect(server.local_addr().unwrap())
+            .unwrap()
+            .with_error_handler(handler);
+
+        transport.send("m|c|1");
+
+        assert_eq!(errors.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_udp_last_error_handler_wins() {
+        let (first, first_handler) = counting_handler();
+        let (second, second_handler) = counting_handler();
+        let transport = UdpTransport::connect(([127, 0, 0, 1], 3232))
+            .unwrap()
+            .with_error_handler(first_handler)
+            .with_error_handler(second_handler);
+
+        transport.send(&oversized_metric());
+
+        assert_eq!(first.load(Ordering::Relaxed), 0);
+        assert_eq!(second.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_udp_send_errors_are_ignored_without_handler() {
+        let transport = UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap();
+
+        transport.send(&oversized_metric());
+    }
+
+    #[test]
+    fn test_udp_transport_debug_shows_whether_handler_is_set() {
+        let transport = UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap();
+        assert!(format!("{transport:?}").contains("on_error: false"));
+
+        let transport = transport.with_error_handler(|_| {});
+        assert!(format!("{transport:?}").contains("on_error: true"));
+    }
+
+    #[test]
+    fn test_udp_transport_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send_sync::<UdpTransport>();
+        assert_send_sync::<BlackHoleTransport>();
     }
 }

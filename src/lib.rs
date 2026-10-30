@@ -24,6 +24,8 @@ pub mod utils;
 
 #[cfg(test)]
 mod integration_tests;
+#[cfg(test)]
+mod test_support;
 
 pub use client::{Client, ClientBuilder};
 pub use metrics::{

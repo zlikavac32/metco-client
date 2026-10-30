@@ -20,7 +20,7 @@ fn server_and_client_on(builder: ClientBuilder, ip: IpAddr) -> (UdpSocket, Clien
 }
 
 fn receive(server: &UdpSocket) -> String {
-    let mut buf = [0; 256];
+    let mut buf = [0; 65_536];
     let (size, _) = server.recv_from(&mut buf).unwrap();
 
     String::from_utf8(buf[..size].to_vec()).unwrap()
@@ -127,5 +127,85 @@ fn gauge_is_properly_serialized() {
     assert_eq!(
         "test|g|123",
         serialize(Gauge::new("test", GaugeOperation::Set(123)))
+    );
+}
+
+#[test]
+fn test_full_metric_is_sent_over_udp() {
+    let (server, client) = server_and_client(
+        ClientBuilder::default()
+            .with_prefix("app.")
+            .with_tag("env", "prod")
+            .with_tag("host", "a"),
+    );
+
+    client.send(
+        Counter::new("req|total", 3)
+            .with_tag("host", "b")
+            .with_tag("k=v", "x;y"),
+    );
+
+    assert_eq!(
+        r"app.req\|total;env=prod;host=b;k\=v=x\;y|c|3",
+        receive(&server)
+    );
+}
+
+#[test]
+fn test_unicode_is_sent_over_udp() {
+    let (server, client) = server_and_client(ClientBuilder::default().with_tag("grad", "Čakovec"));
+
+    client.send(Gauge::new("temperatura_°C", GaugeOperation::Set(-5)));
+
+    assert_eq!("temperatura_°C;grad=Čakovec|g|-5", receive(&server));
+}
+
+#[test]
+fn test_large_metric_is_sent_over_udp() {
+    let (server, client) = server_and_client(ClientBuilder::default());
+    let name = "n".repeat(10_000);
+
+    client.send(Counter::new(name.as_str(), 1));
+
+    assert_eq!(format!("{name}|c|1"), receive(&server));
+}
+
+#[test]
+fn test_gauge_and_timer_handles_send_over_udp() {
+    let (server, client) = server_and_client(ClientBuilder::default());
+
+    let gauge = client.gauge("g");
+    gauge.set(1);
+    gauge.increment(2);
+    gauge.decrement(-3);
+    gauge.remove();
+    {
+        let _timer = client.timer("t");
+    }
+
+    assert_eq!("g|g|1", receive(&server));
+    assert_eq!("g|g|+=2", receive(&server));
+    assert_eq!("g|g|+=3", receive(&server));
+    assert_eq!("g|g|x", receive(&server));
+    assert!(receive(&server).starts_with("t|t|"));
+}
+
+#[test]
+fn test_client_can_be_shared_between_threads() {
+    let (server, client) = server_and_client(ClientBuilder::default());
+
+    std::thread::scope(|scope| {
+        for i in 0..4 {
+            let client = &client;
+            scope.spawn(move || client.send(Counter::new(format!("thread{i}"), 1)));
+        }
+    });
+
+    let mut received: Vec<_> = (0..4).map(|_| receive(&server)).collect();
+    received.sort();
+
+    assert_eq!(
+        received,
+        ["thread0|c|1", "thread1|c|1", "thread2|c|1", "thread3|c|1"]
     );
 }

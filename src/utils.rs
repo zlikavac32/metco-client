@@ -70,10 +70,17 @@ pub fn serialize_name_and_tags(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::tags;
 
     fn escaped(f: fn(&mut String, &str), input: &str) -> String {
         let mut buf = String::new();
         f(&mut buf, input);
+        buf
+    }
+
+    fn serialized(name: &str, default_tags: &Tags<'_>, metric_tags: Option<&Tags<'_>>) -> String {
+        let mut buf = String::new();
+        serialize_name_and_tags(&mut buf, name, default_tags, metric_tags);
         buf
     }
 
@@ -85,6 +92,19 @@ mod tests {
     }
 
     #[test]
+    fn test_escape_value_edge_cases() {
+        assert_eq!(escaped(write_escaped_value, ""), "");
+        assert_eq!(escaped(write_escaped_value, "|"), "\\|");
+        assert_eq!(escaped(write_escaped_value, ";;"), "\\;\\;");
+        assert_eq!(escaped(write_escaped_value, "\\\\"), "\\\\\\\\");
+        assert_eq!(escaped(write_escaped_value, "|x|"), "\\|x\\|");
+        // `=` is only special in tag names.
+        assert_eq!(escaped(write_escaped_value, "a=b"), "a=b");
+        assert_eq!(escaped(write_escaped_value, "čćž→🦀"), "čćž→🦀");
+        assert_eq!(escaped(write_escaped_value, "a b\tc\n"), "a b\tc\n");
+    }
+
+    #[test]
     fn test_escape_tag_name() {
         assert_eq!(escaped(write_escaped_tag_name, "test"), "test");
         assert_eq!(escaped(write_escaped_tag_name, "te\\st"), "te\\\\st");
@@ -92,48 +112,130 @@ mod tests {
     }
 
     #[test]
+    fn test_escape_tag_name_edge_cases() {
+        assert_eq!(escaped(write_escaped_tag_name, ""), "");
+        assert_eq!(escaped(write_escaped_tag_name, "=="), "\\=\\=");
+        assert_eq!(escaped(write_escaped_tag_name, "\\="), "\\\\\\=");
+        assert_eq!(escaped(write_escaped_tag_name, "čćž🦀"), "čćž🦀");
+    }
+
+    #[test]
+    fn test_escaping_appends_to_existing_buffer() {
+        let mut buf = String::from("prefix:");
+        write_escaped_value(&mut buf, "a|b");
+        write_escaped_tag_name(&mut buf, "c=d");
+        assert_eq!(buf, "prefix:a\\|bc\\=d");
+    }
+
+    #[test]
     fn test_serialize_name_and_tags() {
-        let mut buf = String::new();
-        serialize_name_and_tags(&mut buf, "test", &Tags::default(), None);
-        assert_eq!("test", buf);
+        assert_eq!("test", serialized("test", &Tags::new(), None));
 
-        let default_tags = Tags::from([("k1".into(), "v1".into())]);
-        let mut buf = String::new();
-        serialize_name_and_tags(&mut buf, "test", &default_tags, None);
-        assert_eq!("test;k1=v1", buf);
+        let default_tags = tags(&[("k1", "v1")]);
+        assert_eq!("test;k1=v1", serialized("test", &default_tags, None));
 
-        let metric_tags = Tags::from([("k2".into(), "v2".into())]);
-        let mut buf = String::new();
-        serialize_name_and_tags(&mut buf, "test", &default_tags, Some(&metric_tags));
-        assert_eq!("test;k1=v1;k2=v2", buf);
+        let metric_tags = tags(&[("k2", "v2")]);
+        assert_eq!(
+            "test;k1=v1;k2=v2",
+            serialized("test", &default_tags, Some(&metric_tags))
+        );
 
         // Metric tag overrides default tag
-        let override_tags = Tags::from([("k1".into(), "v1_new".into())]);
-        let mut buf = String::new();
-        serialize_name_and_tags(&mut buf, "test", &default_tags, Some(&override_tags));
-        assert_eq!("test;k1=v1_new", buf);
+        let override_tags = tags(&[("k1", "v1_new")]);
+        assert_eq!(
+            "test;k1=v1_new",
+            serialized("test", &default_tags, Some(&override_tags))
+        );
+    }
+
+    #[test]
+    fn test_serialize_with_empty_metric_tags() {
+        assert_eq!("test", serialized("test", &Tags::new(), Some(&Tags::new())));
+        assert_eq!(
+            "test;k1=v1",
+            serialized("test", &tags(&[("k1", "v1")]), Some(&Tags::new()))
+        );
+    }
+
+    #[test]
+    fn test_serialize_only_metric_tags() {
+        assert_eq!(
+            "test;a=1;b=2",
+            serialized("test", &Tags::new(), Some(&tags(&[("b", "2"), ("a", "1")])))
+        );
     }
 
     #[test]
     fn test_serialize_tags_sorted_by_name() {
-        let default_tags = Tags::from([("b".into(), "1".into()), ("d".into(), "2".into())]);
-        let metric_tags = Tags::from([
-            ("c".into(), "3".into()),
-            ("a".into(), "4".into()),
-            ("d".into(), "5".into()),
-        ]);
+        let default_tags = tags(&[("b", "1"), ("d", "2")]);
+        let metric_tags = tags(&[("c", "3"), ("a", "4"), ("d", "5")]);
 
-        let mut buf = String::new();
-        serialize_name_and_tags(&mut buf, "test", &default_tags, Some(&metric_tags));
-        assert_eq!("test;a=4;b=1;c=3;d=5", buf);
+        assert_eq!(
+            "test;a=4;b=1;c=3;d=5",
+            serialized("test", &default_tags, Some(&metric_tags))
+        );
+    }
+
+    #[test]
+    fn test_serialize_default_tags_before_and_after_metric_tags() {
+        let default_tags = tags(&[("a", "1"), ("m", "2"), ("z", "3")]);
+        let metric_tags = tags(&[("k", "4"), ("n", "5")]);
+
+        assert_eq!(
+            "test;a=1;k=4;m=2;n=5;z=3",
+            serialized("test", &default_tags, Some(&metric_tags))
+        );
+    }
+
+    #[test]
+    fn test_serialize_all_default_tags_overridden() {
+        let default_tags = tags(&[("a", "1"), ("b", "2")]);
+        let metric_tags = tags(&[("a", "3"), ("b", "4")]);
+
+        assert_eq!(
+            "test;a=3;b=4",
+            serialized("test", &default_tags, Some(&metric_tags))
+        );
+    }
+
+    #[test]
+    fn test_serialize_tags_sorted_by_unescaped_name() {
+        // `=` sorts before `a`, and the order is decided before escaping.
+        let metric_tags = tags(&[("a", "1"), ("=", "2")]);
+
+        assert_eq!(
+            "test;\\==2;a=1",
+            serialized("test", &Tags::new(), Some(&metric_tags))
+        );
+    }
+
+    #[test]
+    fn test_serialize_empty_name_and_values() {
+        assert_eq!("", serialized("", &Tags::new(), None));
+        assert_eq!(
+            "test;k=",
+            serialized("test", &Tags::new(), Some(&tags(&[("k", "")])))
+        );
+        assert_eq!(
+            "test;=v",
+            serialized("test", &Tags::new(), Some(&tags(&[("", "v")])))
+        );
     }
 
     #[test]
     fn test_serialize_with_escaping() {
-        let metric_tags = Tags::from([("k1".into(), "v|1".into())]);
+        let metric_tags = tags(&[("k1", "v|1")]);
 
-        let mut buf = String::new();
-        serialize_name_and_tags(&mut buf, "t|est", &Tags::default(), Some(&metric_tags));
-        assert_eq!("t\\|est;k1=v\\|1", buf);
+        assert_eq!(
+            "t\\|est;k1=v\\|1",
+            serialized("t|est", &Tags::new(), Some(&metric_tags))
+        );
+    }
+
+    #[test]
+    fn test_serialize_escapes_default_tags() {
+        let default_tags = tags(&[("k=1", "v;1")]);
+
+        assert_eq!("test;k\\=1=v\\;1", serialized("test", &default_tags, None));
     }
 }

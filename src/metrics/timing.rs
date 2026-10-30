@@ -163,24 +163,28 @@ impl<T: Transport> Drop for Timer<'_, T> {
 mod tests {
     use super::*;
     use crate::ClientBuilder;
-    use crate::transport::BlackHoleTransport;
-    use std::cell::RefCell;
+    use crate::test_support::{RecordingTransport, serialize, tags};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::time::Duration;
 
-    #[derive(Default)]
-    struct RecordingTransport(RefCell<Vec<String>>);
+    /// Splits a sent timing into its name part and duration in nanoseconds.
+    ///
+    /// Splits from the right, so escaped `|` in the name are left intact.
+    fn split_timing(metric: &str) -> (&str, u64) {
+        let parts: Vec<_> = metric.rsplitn(4, '|').collect();
 
-    impl Transport for RecordingTransport {
-        fn send(&self, metric: &str) {
-            self.0.borrow_mut().push(metric.to_owned());
-        }
+        assert_eq!(parts.len(), 4, "{metric}");
+        assert_eq!(parts[0], "ns");
+        assert_eq!(parts[2], "t");
+
+        (parts[3], parts[1].parse().unwrap())
     }
 
-    fn recorded_names(transport: &RecordingTransport) -> Vec<String> {
+    fn sent_names(transport: &RecordingTransport) -> Vec<String> {
         transport
-            .0
-            .borrow()
+            .sent()
             .iter()
-            .map(|m| m.split('|').next().unwrap().to_owned())
+            .map(|m| split_timing(m).0.to_owned())
             .collect()
     }
 
@@ -194,15 +198,45 @@ mod tests {
 
     #[test]
     fn test_timing_serialization() {
-        let mut buf = String::new();
-        Timing::new("test", 100, TimingResolution::MilliSeconds)
-            .serialize(&Tags::default(), &mut buf);
-        assert_eq!("test|t|100|ms", buf);
+        assert_eq!(
+            "test|t|100|ms",
+            serialize(&Timing::new("test", 100, TimingResolution::MilliSeconds))
+        );
+    }
+
+    #[test]
+    fn test_timing_serialization_all_resolutions() {
+        let cases = [
+            (TimingResolution::Seconds, "test|t|7|s"),
+            (TimingResolution::MilliSeconds, "test|t|7|ms"),
+            (TimingResolution::MicroSeconds, "test|t|7|us"),
+            (TimingResolution::NanoSeconds, "test|t|7|ns"),
+        ];
+
+        for (resolution, expected) in cases {
+            assert_eq!(expected, serialize(&Timing::new("test", 7, resolution)));
+        }
+    }
+
+    #[test]
+    fn test_timing_value_bounds() {
+        assert_eq!(
+            "test|t|0|ns",
+            serialize(&Timing::new("test", 0, TimingResolution::NanoSeconds))
+        );
+        assert_eq!(
+            "test|t|18446744073709551615|ns",
+            serialize(&Timing::new(
+                "test",
+                u64::MAX,
+                TimingResolution::NanoSeconds
+            ))
+        );
     }
 
     #[test]
     fn test_timer_with_tags() {
-        let client = ClientBuilder::default().build(BlackHoleTransport);
+        let client = ClientBuilder::default().build(RecordingTransport::default());
         let timer = client.timer("test").with_tag("t1", "v1");
 
         assert_eq!(timer.name, "test");
@@ -218,12 +252,9 @@ mod tests {
         client
             .timer("tagged")
             .with_tag("t1", "v1")
-            .finish_with_tags(Tags::from([("t2".into(), "v2".into())]));
+            .finish_with_tags(tags(&[("t2", "v2")]));
 
-        let names = recorded_names(&transport);
-        assert_eq!(names.len(), 2);
-        assert_eq!(names[0], "plain");
-        assert_eq!(names[1], "tagged;t1=v1;t2=v2");
+        assert_eq!(sent_names(&transport), ["plain", "tagged;t1=v1;t2=v2"]);
     }
 
     #[test]
@@ -233,8 +264,95 @@ mod tests {
 
         {
             let _timer = client.timer("scoped");
+            assert!(transport.sent().is_empty());
         }
 
-        assert_eq!(recorded_names(&transport), ["scoped"]);
+        assert_eq!(sent_names(&transport), ["scoped"]);
+    }
+
+    #[test]
+    fn test_timer_is_sent_when_unwinding() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _timer = client.timer("panicking");
+            panic!("expected panic");
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(sent_names(&transport), ["panicking"]);
+    }
+
+    #[test]
+    fn test_timer_measures_elapsed_time() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+
+        let timer = client.timer("sleep");
+        std::thread::sleep(Duration::from_millis(5));
+        timer.finish();
+
+        let sent = transport.sent();
+        let (_, nanos) = split_timing(&sent[0]);
+        assert!(nanos >= 5_000_000, "{nanos}");
+    }
+
+    #[test]
+    fn test_finish_with_tags_overrides_timer_tags() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+
+        client
+            .timer("t")
+            .with_tag("a", "timer")
+            .with_tag("b", "timer")
+            .finish_with_tags(tags(&[("b", "finish")]));
+
+        assert_eq!(sent_names(&transport), ["t;a=timer;b=finish"]);
+    }
+
+    #[test]
+    fn test_finish_with_tags_without_timer_tags() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+
+        client.timer("t").finish_with_tags(tags(&[("a", "1")]));
+        client.timer("t").finish_with_tags(Tags::new());
+
+        assert_eq!(sent_names(&transport), ["t;a=1", "t"]);
+    }
+
+    #[test]
+    fn test_timer_uses_client_prefix_and_tags() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default()
+            .with_prefix("app.")
+            .with_tag("env", "prod")
+            .with_tag("host", "a")
+            .build(&transport);
+
+        client.timer("t").finish();
+        client.timer("t").with_tag("host", "b").finish();
+        client.timer("t").finish_with_tags(tags(&[("host", "c")]));
+
+        assert_eq!(
+            sent_names(&transport),
+            [
+                "app.t;env=prod;host=a",
+                "app.t;env=prod;host=b",
+                "app.t;env=prod;host=c"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_timer_escapes_name() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+
+        client.timer("a|b").finish();
+
+        assert_eq!(sent_names(&transport), [r"a\|b"]);
     }
 }

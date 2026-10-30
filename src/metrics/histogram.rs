@@ -51,11 +51,34 @@ impl Metric for Histogram<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{serialize, serialize_with, tags};
 
     #[test]
     fn test_histogram_serialization() {
-        let mut buf = String::new();
-        Histogram::new("test", 100).serialize(&Tags::default(), &mut buf);
-        assert_eq!("test|h|100", buf);
+        assert_eq!("test|h|100", serialize(&Histogram::new("test", 100)));
+    }
+
+    #[test]
+    fn test_histogram_value_bounds() {
+        assert_eq!("test|h|0", serialize(&Histogram::new("test", 0)));
+        assert_eq!(
+            "test|h|18446744073709551615",
+            serialize(&Histogram::new("test", u64::MAX))
+        );
+    }
+
+    #[test]
+    fn test_histogram_with_tags_and_default_tags() {
+        let histogram = Histogram::new("test", 1).with_tag("b", "metric");
+
+        assert_eq!(
+            "test;a=default;b=metric|h|1",
+            serialize_with(&histogram, &tags(&[("a", "default"), ("b", "default")]))
+        );
+    }
+
+    #[test]
+    fn test_histogram_escapes_name() {
+        assert_eq!(r"a\|b|h|1", serialize(&Histogram::new("a|b", 1)));
     }
 }

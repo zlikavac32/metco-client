@@ -168,30 +168,35 @@ impl<'a, T: Transport> GaugeHandle<'a, T> {
 mod tests {
     use super::*;
     use crate::ClientBuilder;
-    use crate::transport::BlackHoleTransport;
-
-    fn serialize_to_string(gauge: Gauge) -> String {
-        let mut buf = String::new();
-        gauge.serialize(&Tags::default(), &mut buf);
-        buf
-    }
+    use crate::test_support::{RecordingTransport, serialize, tags};
 
     #[test]
     fn test_gauge_serialization() {
         let cases = [
             (GaugeOperation::Set(123), "test|g|123"),
             (GaugeOperation::Set(-123), "test|g|-123"),
+            (GaugeOperation::Set(0), "test|g|0"),
+            (GaugeOperation::Set(i64::MAX), "test|g|9223372036854775807"),
+            (GaugeOperation::Set(i64::MIN), "test|g|-9223372036854775808"),
             (GaugeOperation::Remove, "test|g|x"),
             (GaugeOperation::Increment(10), "test|g|+=10"),
             (GaugeOperation::Decrement(10), "test|g|-=10"),
             (GaugeOperation::Increment(0), "test|g|+=0"),
+            (GaugeOperation::Decrement(0), "test|g|-=0"),
             (GaugeOperation::Increment(-10), "test|g|-=10"),
             (GaugeOperation::Decrement(-10), "test|g|+=10"),
+            (
+                GaugeOperation::Increment(i64::MAX),
+                "test|g|+=9223372036854775807",
+            ),
+            (
+                GaugeOperation::Decrement(i64::MAX),
+                "test|g|-=9223372036854775807",
+            ),
             (
                 GaugeOperation::Increment(i64::MIN),
                 "test|g|-=9223372036854775808",
             ),
-            (GaugeOperation::Decrement(0), "test|g|-=0"),
             (
                 GaugeOperation::Decrement(i64::MIN),
                 "test|g|+=9223372036854775808",
@@ -199,14 +204,103 @@ mod tests {
         ];
 
         for (operation, expected) in cases {
-            assert_eq!(expected, serialize_to_string(Gauge::new("test", operation)));
+            assert_eq!(
+                expected,
+                serialize(&Gauge::new("test", operation)),
+                "{operation:?}"
+            );
         }
     }
 
     #[test]
     fn test_gauge_handle_name() {
-        let client = ClientBuilder::default().build(BlackHoleTransport);
+        let client = ClientBuilder::default().build(RecordingTransport::default());
         let handle = client.gauge("test_gauge");
         assert_eq!(handle.name, "test_gauge");
+    }
+
+    #[test]
+    fn test_gauge_handle_operations() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+        let gauge = client.gauge("g");
+
+        gauge.set(5);
+        gauge.increment(2);
+        gauge.decrement(1);
+        gauge.increment(-3);
+        gauge.remove();
+
+        assert_eq!(
+            transport.sent(),
+            ["g|g|5", "g|g|+=2", "g|g|-=1", "g|g|-=3", "g|g|x"]
+        );
+    }
+
+    #[test]
+    fn test_gauge_handle_operations_with_tags() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+        let gauge = client.gauge("g");
+
+        gauge.set_with_tags(5, tags(&[("op", "set")]));
+        gauge.increment_with_tags(2, tags(&[("op", "inc")]));
+        gauge.decrement_with_tags(1, tags(&[("op", "dec")]));
+        gauge.remove_with_tags(tags(&[("op", "rm")]));
+
+        assert_eq!(
+            transport.sent(),
+            [
+                "g;op=set|g|5",
+                "g;op=inc|g|+=2",
+                "g;op=dec|g|-=1",
+                "g;op=rm|g|x"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_gauge_handle_uses_client_prefix_and_tags() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default()
+            .with_prefix("app.")
+            .with_tag("env", "prod")
+            .with_tag("host", "a")
+            .build(&transport);
+        let gauge = client.gauge("g");
+
+        gauge.set(1);
+        gauge.set_with_tags(2, tags(&[("host", "b")]));
+
+        assert_eq!(
+            transport.sent(),
+            ["app.g;env=prod;host=a|g|1", "app.g;env=prod;host=b|g|2"]
+        );
+    }
+
+    #[test]
+    fn test_gauge_handle_is_reusable_with_owned_name() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+        let gauge = client.gauge(format!("g{}", 1));
+
+        gauge.set(1);
+        gauge.set(2);
+
+        assert_eq!(transport.sent(), ["g1|g|1", "g1|g|2"]);
+    }
+
+    #[test]
+    fn test_gauge_handle_tags_can_be_short_lived() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+        let gauge = client.gauge("g");
+
+        for i in 0..2 {
+            let value = i.to_string();
+            gauge.set_with_tags(i, tags(&[("i", &value)]));
+        }
+
+        assert_eq!(transport.sent(), ["g;i=0|g|0", "g;i=1|g|1"]);
     }
 }
