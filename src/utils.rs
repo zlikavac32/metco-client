@@ -48,14 +48,21 @@ pub fn serialize_name_and_tags(
 ) {
     write_escaped_value(buf, name);
 
-    let inherited = default_tags
-        .iter()
-        .filter(|(name, _)| tags.is_none_or(|t| !t.contains_key(*name)));
+    // Both maps iterate in name order, so merging them keeps the output sorted.
+    let mut defaults = default_tags.iter().peekable();
 
-    let mut merged: Vec<_> = tags.into_iter().flatten().chain(inherited).collect();
-    merged.sort_unstable_by_key(|(name, _)| *name);
+    for (name, value) in tags.into_iter().flatten() {
+        while let Some((default_name, default_value)) = defaults.next_if(|(d, _)| *d < name) {
+            write_tag(buf, default_name, default_value);
+        }
 
-    for (name, value) in merged {
+        // Skip the default tag overridden by this one.
+        defaults.next_if(|(d, _)| *d == name);
+
+        write_tag(buf, name, value);
+    }
+
+    for (name, value) in defaults {
         write_tag(buf, name, value);
     }
 }

@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Breaking:** `Tags` is now a `BTreeMap` instead of a `HashMap`
 - Tags passed to `GaugeHandle::*_with_tags` no longer need to outlive the client borrow
 - `Timer` now requires `T: Transport` in its definition
 
@@ -20,7 +21,7 @@ All notable changes to this project will be documented in this file.
 - `Timer` is now sent when dropped, as documented, instead of being silently discarded
 - `UdpTransport::connect` now works with IPv6 addresses
 - Negative gauge increments and decrements are now sent as `-=N` and `+=N` instead of `+=-N` and `-=-N`
-- Tags are now serialized sorted by name instead of in random `HashMap` order
+- Tags are now serialized sorted by name instead of in random order
 
 ## 0.2.1 - 2026-05-31
 

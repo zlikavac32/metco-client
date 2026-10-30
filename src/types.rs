@@ -1,7 +1,8 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Type alias for metric tags.
 ///
-/// Tags are used to add metadata to metrics. They are represented as a `HashMap`.
-pub type Tags<'a> = HashMap<Cow<'a, str>, Cow<'a, str>>;
+/// Tags are used to add metadata to metrics. They are represented as a
+/// `BTreeMap`, so they are always serialized sorted by name.
+pub type Tags<'a> = BTreeMap<Cow<'a, str>, Cow<'a, str>>;
