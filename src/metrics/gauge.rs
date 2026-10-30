@@ -14,11 +14,13 @@ pub enum GaugeOperation {
     Remove,
     /// Increments the gauge by a relative value.
     ///
-    /// A negative value is sent as a decrement.
+    /// A negative value is sent as a decrement. `i64::MIN` is sent as a
+    /// decrement by `i64::MAX`, the largest change MetCo accepts.
     Increment(i64),
     /// Decrements the gauge by a relative value.
     ///
-    /// A negative value is sent as an increment.
+    /// A negative value is sent as an increment. `i64::MIN` is sent as an
+    /// increment by `i64::MAX`, the largest change MetCo accepts.
     Decrement(i64),
 }
 
@@ -75,8 +77,12 @@ impl Metric for Gauge<'_> {
 }
 
 /// Writes a relative change as `+=N` or `-=N`, keeping `N` unsigned.
+///
+/// MetCo parses `N` as an `i64`, so the magnitude is capped at `i64::MAX`.
 fn write_delta(buf: &mut String, negative: bool, magnitude: u64) -> std::fmt::Result {
     let sign = if negative { '-' } else { '+' };
+    let magnitude = magnitude.min(i64::MAX.unsigned_abs());
+
     write!(buf, "{sign}={magnitude}")
 }
 
@@ -198,11 +204,11 @@ mod tests {
             ),
             (
                 GaugeOperation::Increment(i64::MIN),
-                "test|g|-=9223372036854775808",
+                "test|g|-=9223372036854775807",
             ),
             (
                 GaugeOperation::Decrement(i64::MIN),
-                "test|g|+=9223372036854775808",
+                "test|g|+=9223372036854775807",
             ),
         ];
 
