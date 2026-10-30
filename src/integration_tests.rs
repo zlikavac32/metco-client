@@ -1,11 +1,15 @@
 use crate::prelude::*;
-use std::net::UdpSocket;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::time::{Duration, Instant};
 
 /// Binds a server socket on an ephemeral port and returns it together with
 /// a client connected to it.
 fn server_and_client(builder: ClientBuilder) -> (UdpSocket, Client<UdpTransport>) {
-    let server = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    server_and_client_on(builder, Ipv4Addr::LOCALHOST.into())
+}
+
+fn server_and_client_on(builder: ClientBuilder, ip: IpAddr) -> (UdpSocket, Client<UdpTransport>) {
+    let server = UdpSocket::bind((ip, 0)).unwrap();
     server
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
@@ -56,6 +60,16 @@ fn test_client_and_send_data() {
 
     assert_eq!("test|c|12", receive(&server));
     assert_eq!("test2|h|123", receive(&server));
+}
+
+#[test]
+fn test_client_sends_over_ipv6() {
+    let (server, client) =
+        server_and_client_on(ClientBuilder::default(), Ipv6Addr::LOCALHOST.into());
+
+    client.send(Counter::new("test", 1));
+
+    assert_eq!("test|c|1", receive(&server));
 }
 
 #[test]

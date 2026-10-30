@@ -1,5 +1,5 @@
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -50,14 +50,21 @@ pub struct UdpTransport {
 }
 
 impl UdpTransport {
-    /// Binds an ephemeral local socket and connects it to `addr`.
+    /// Binds an ephemeral local socket of the same address family as `addr`
+    /// and connects it to `addr`.
     ///
     /// # Errors
     ///
     /// Returns an error if the local socket cannot be bound or connected.
     pub fn connect<A: Into<SocketAddr>>(addr: A) -> io::Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.connect(addr.into())?;
+        let addr = addr.into();
+        let local: SocketAddr = match addr {
+            SocketAddr::V4(_) => (Ipv4Addr::UNSPECIFIED, 0).into(),
+            SocketAddr::V6(_) => (Ipv6Addr::UNSPECIFIED, 0).into(),
+        };
+
+        let socket = UdpSocket::bind(local)?;
+        socket.connect(addr)?;
 
         Ok(Self { socket })
     }
