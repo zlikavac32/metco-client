@@ -4,9 +4,10 @@ use crate::transport::Transport;
 use crate::types::Tags;
 use crate::utils::serialize_name_and_tags;
 use std::borrow::Cow;
+use std::fmt::Write;
 
 /// Represents an operation to be performed on a gauge.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GaugeOperation {
     /// Sets the gauge to an absolute value.
     Set(i64),
@@ -33,6 +34,8 @@ pub enum GaugeOperation {
 /// let mut buf = String::new();
 /// gauge.serialize(&Tags::default(), &mut buf);
 /// ```
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct Gauge<'a> {
     name: Cow<'a, str>,
     operation: GaugeOperation,
@@ -52,83 +55,44 @@ impl<'a> Gauge<'a> {
     tags_support!();
 }
 
-impl<'a> Metric for Gauge<'a> {
-    fn serialize(&self, tags: &Tags, buf: &mut String) {
+impl Metric for Gauge<'_> {
+    fn serialize(&self, tags: &Tags<'_>, buf: &mut String) {
         serialize_name_and_tags(buf, &self.name, tags, self.tags.as_ref());
 
         buf.push_str("|g|");
 
-        match self.operation {
-            GaugeOperation::Set(value) => buf.push_str(&value.to_string()),
-            GaugeOperation::Remove => buf.push('x'),
-            GaugeOperation::Increment(value) => {
-                buf.push_str("+=");
-                buf.push_str(&value.to_string());
-            }
-            GaugeOperation::Decrement(value) => {
-                buf.push_str("-=");
-                buf.push_str(&value.to_string());
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::transport::UdpTransport;
-
-    fn serialize_to_string(gauge: Gauge, tags: &Tags) -> String {
-        let mut buf = String::new();
-        gauge.serialize(tags, &mut buf);
-        buf
-    }
-
-    #[test]
-    fn test_gauge_serialization() {
-        let tags = Tags::default();
-
-        assert_eq!(
-            "test|g|123",
-            serialize_to_string(Gauge::new("test", GaugeOperation::Set(123)), &tags)
-        );
-        assert_eq!(
-            "test|g|-123",
-            serialize_to_string(Gauge::new("test", GaugeOperation::Set(-123)), &tags)
-        );
-        assert_eq!(
-            "test|g|x",
-            serialize_to_string(Gauge::new("test", GaugeOperation::Remove), &tags)
-        );
-        assert_eq!(
-            "test|g|+=10",
-            serialize_to_string(Gauge::new("test", GaugeOperation::Increment(10)), &tags)
-        );
-        assert_eq!(
-            "test|g|-=10",
-            serialize_to_string(Gauge::new("test", GaugeOperation::Decrement(10)), &tags)
-        );
-    }
-
-    #[test]
-    fn test_gauge_handle_name() {
-        use crate::ClientBuilder;
-        let client =
-            ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 0)).unwrap());
-        let handle = client.gauge("test_gauge");
-        assert_eq!(handle.name, "test_gauge");
+        let _ = match self.operation {
+            GaugeOperation::Set(value) => write!(buf, "{value}"),
+            GaugeOperation::Remove => buf.write_char('x'),
+            GaugeOperation::Increment(value) => write!(buf, "+={value}"),
+            GaugeOperation::Decrement(value) => write!(buf, "-={value}"),
+        };
     }
 }
 
 /// A handle for performing operations on a gauge.
 ///
 /// Created via [`Client::gauge`](crate::Client::gauge).
+#[derive(Debug)]
 pub struct GaugeHandle<'a, T> {
-    pub(crate) client: &'a Client<T>,
-    pub(crate) name: Cow<'a, str>,
+    client: &'a Client<T>,
+    name: Cow<'a, str>,
 }
 
 impl<'a, T: Transport> GaugeHandle<'a, T> {
+    pub(crate) fn new(client: &'a Client<T>, name: Cow<'a, str>) -> Self {
+        Self { client, name }
+    }
+
+    fn apply(&self, operation: GaugeOperation, tags: Option<Tags<'_>>) {
+        let gauge = Gauge::new(self.name.as_ref(), operation);
+
+        match tags {
+            Some(tags) => self.client.send(gauge.with_tags(tags)),
+            None => self.client.send(gauge),
+        };
+    }
+
     /// Sets the gauge to the given value.
     ///
     /// # Examples
@@ -141,26 +105,22 @@ impl<'a, T: Transport> GaugeHandle<'a, T> {
     /// gauge.set(25);
     /// ```
     pub fn set(&self, value: i64) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Set(value)));
+        self.apply(GaugeOperation::Set(value), None);
     }
 
     /// Sets the gauge to the given value with additional tags.
-    pub fn set_with_tags(&self, value: i64, tags: Tags<'a>) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Set(value)).with_tags(tags));
+    pub fn set_with_tags(&self, value: i64, tags: Tags<'_>) {
+        self.apply(GaugeOperation::Set(value), Some(tags));
     }
 
     /// Removes the gauge.
     pub fn remove(&self) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Remove));
+        self.apply(GaugeOperation::Remove, None);
     }
 
     /// Removes the gauge with additional tags.
-    pub fn remove_with_tags(&self, tags: Tags<'a>) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Remove).with_tags(tags));
+    pub fn remove_with_tags(&self, tags: Tags<'_>) {
+        self.apply(GaugeOperation::Remove, Some(tags));
     }
 
     /// Increments the gauge by the given value.
@@ -175,29 +135,56 @@ impl<'a, T: Transport> GaugeHandle<'a, T> {
     /// gauge.increment(2);
     /// ```
     pub fn increment(&self, value: i64) {
-        self.client.send(Gauge::new(
-            self.name.clone(),
-            GaugeOperation::Increment(value),
-        ));
+        self.apply(GaugeOperation::Increment(value), None);
     }
 
     /// Increments the gauge by the given value with additional tags.
-    pub fn increment_with_tags(&self, value: i64, tags: Tags<'a>) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Increment(value)).with_tags(tags));
+    pub fn increment_with_tags(&self, value: i64, tags: Tags<'_>) {
+        self.apply(GaugeOperation::Increment(value), Some(tags));
     }
 
     /// Decrements the gauge by the given value.
     pub fn decrement(&self, value: i64) {
-        self.client.send(Gauge::new(
-            self.name.clone(),
-            GaugeOperation::Decrement(value),
-        ));
+        self.apply(GaugeOperation::Decrement(value), None);
     }
 
     /// Decrements the gauge by the given value with additional tags.
-    pub fn decrement_with_tags(&self, value: i64, tags: Tags<'a>) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Decrement(value)).with_tags(tags));
+    pub fn decrement_with_tags(&self, value: i64, tags: Tags<'_>) {
+        self.apply(GaugeOperation::Decrement(value), Some(tags));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ClientBuilder;
+    use crate::transport::BlackHoleTransport;
+
+    fn serialize_to_string(gauge: Gauge) -> String {
+        let mut buf = String::new();
+        gauge.serialize(&Tags::default(), &mut buf);
+        buf
+    }
+
+    #[test]
+    fn test_gauge_serialization() {
+        let cases = [
+            (GaugeOperation::Set(123), "test|g|123"),
+            (GaugeOperation::Set(-123), "test|g|-123"),
+            (GaugeOperation::Remove, "test|g|x"),
+            (GaugeOperation::Increment(10), "test|g|+=10"),
+            (GaugeOperation::Decrement(10), "test|g|-=10"),
+        ];
+
+        for (operation, expected) in cases {
+            assert_eq!(expected, serialize_to_string(Gauge::new("test", operation)));
+        }
+    }
+
+    #[test]
+    fn test_gauge_handle_name() {
+        let client = ClientBuilder::default().build(BlackHoleTransport);
+        let handle = client.gauge("test_gauge");
+        assert_eq!(handle.name, "test_gauge");
     }
 }

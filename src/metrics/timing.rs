@@ -4,10 +4,11 @@ use crate::transport::Transport;
 use crate::types::Tags;
 use crate::utils::serialize_name_and_tags;
 use std::borrow::Cow;
+use std::fmt::Write;
 use std::time::Instant;
 
 /// Resolution for timing metrics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimingResolution {
     /// Seconds resolution.
     Seconds,
@@ -21,46 +22,14 @@ pub enum TimingResolution {
 
 impl TimingResolution {
     /// Encodes the resolution into its string representation.
+    #[must_use]
     pub fn encode(&self) -> &'static str {
         match self {
-            TimingResolution::Seconds => "s",
-            TimingResolution::MilliSeconds => "ms",
-            TimingResolution::MicroSeconds => "us",
-            TimingResolution::NanoSeconds => "ns",
+            Self::Seconds => "s",
+            Self::MilliSeconds => "ms",
+            Self::MicroSeconds => "us",
+            Self::NanoSeconds => "ns",
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ClientBuilder;
-    use crate::transport::UdpTransport;
-
-    #[test]
-    fn test_timing_resolution_encoding() {
-        assert_eq!(TimingResolution::Seconds.encode(), "s");
-        assert_eq!(TimingResolution::MilliSeconds.encode(), "ms");
-        assert_eq!(TimingResolution::MicroSeconds.encode(), "us");
-        assert_eq!(TimingResolution::NanoSeconds.encode(), "ns");
-    }
-
-    #[test]
-    fn test_timing_serialization() {
-        let tags = Tags::default();
-        let mut buf = String::new();
-        Timing::new("test", 100, TimingResolution::MilliSeconds).serialize(&tags, &mut buf);
-        assert_eq!("test|t|100|ms", buf);
-    }
-
-    #[test]
-    fn test_timer_with_tags() {
-        let client =
-            ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 0)).unwrap());
-        let timer = client.timer("test").with_tag("t1", "v1");
-
-        assert_eq!(timer.name, "test");
-        assert_eq!(timer.tags.as_ref().unwrap().get("t1").unwrap(), "v1");
     }
 }
 
@@ -79,6 +48,8 @@ mod tests {
 /// let mut buf = String::new();
 /// timing.serialize(&Tags::default(), &mut buf);
 /// ```
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct Timing<'a> {
     name: Cow<'a, str>,
     duration: u64,
@@ -104,14 +75,11 @@ impl<'a> Timing<'a> {
     tags_support!();
 }
 
-impl<'a> Metric for Timing<'a> {
-    fn serialize(&self, tags: &Tags, buf: &mut String) {
+impl Metric for Timing<'_> {
+    fn serialize(&self, tags: &Tags<'_>, buf: &mut String) {
         serialize_name_and_tags(buf, &self.name, tags, self.tags.as_ref());
 
-        buf.push_str("|t|");
-        buf.push_str(&self.duration.to_string());
-        buf.push('|');
-        buf.push_str(self.resolution.encode());
+        let _ = write!(buf, "|t|{}|{}", self.duration, self.resolution.encode());
     }
 }
 
@@ -130,14 +98,25 @@ impl<'a> Metric for Timing<'a> {
 /// // ... complex calculation ...
 /// timer.finish();
 /// ```
+#[derive(Debug)]
+#[must_use = "the duration is only sent when `finish` or `finish_with_tags` is called"]
 pub struct Timer<'a, T> {
-    pub(crate) client: &'a Client<T>,
-    pub(crate) now: Instant,
-    pub(crate) name: Cow<'a, str>,
-    pub(crate) tags: Option<Tags<'a>>,
+    client: &'a Client<T>,
+    start: Instant,
+    name: Cow<'a, str>,
+    tags: Option<Tags<'a>>,
 }
 
 impl<'a, T: Transport> Timer<'a, T> {
+    pub(crate) fn new(client: &'a Client<T>, name: Cow<'a, str>) -> Self {
+        Self {
+            client,
+            start: Instant::now(),
+            name,
+            tags: None,
+        }
+    }
+
     /// Finishes the timer and sends the elapsed time to the client.
     ///
     /// # Examples
@@ -150,48 +129,57 @@ impl<'a, T: Transport> Timer<'a, T> {
     /// timer.finish();
     /// ```
     pub fn finish(self) {
-        match self.tags {
-            None => self.client.send(Timing::new(
-                self.name,
-                self.now.elapsed().as_nanos() as u64,
-                TimingResolution::NanoSeconds,
-            )),
-            Some(tags) => self.client.send_with_tags(
-                Timing::new(
-                    self.name,
-                    self.now.elapsed().as_nanos() as u64,
-                    TimingResolution::NanoSeconds,
-                ),
-                tags,
-            ),
-        };
+        let client = self.client;
+        client.send(self.into_timing());
     }
 
     /// Finishes the timer and sends the elapsed time to the client with additional tags.
     pub fn finish_with_tags(self, tags: Tags<'a>) {
-        match self.tags {
-            None => self.client.send_with_tags(
-                Timing::new(
-                    self.name,
-                    self.now.elapsed().as_nanos() as u64,
-                    TimingResolution::NanoSeconds,
-                ),
-                tags,
-            ),
-            Some(mut inner_tags) => {
-                inner_tags.extend(tags);
+        let client = self.client;
+        client.send(self.into_timing().with_tags(tags));
+    }
 
-                self.client.send_with_tags(
-                    Timing::new(
-                        self.name,
-                        self.now.elapsed().as_nanos() as u64,
-                        TimingResolution::NanoSeconds,
-                    ),
-                    inner_tags,
-                )
-            }
-        };
+    fn into_timing(self) -> Timing<'a> {
+        let elapsed = u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let timing = Timing::new(self.name, elapsed, TimingResolution::NanoSeconds);
+
+        match self.tags {
+            Some(tags) => timing.with_tags(tags),
+            None => timing,
+        }
     }
 
     tags_support!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ClientBuilder;
+    use crate::transport::BlackHoleTransport;
+
+    #[test]
+    fn test_timing_resolution_encoding() {
+        assert_eq!(TimingResolution::Seconds.encode(), "s");
+        assert_eq!(TimingResolution::MilliSeconds.encode(), "ms");
+        assert_eq!(TimingResolution::MicroSeconds.encode(), "us");
+        assert_eq!(TimingResolution::NanoSeconds.encode(), "ns");
+    }
+
+    #[test]
+    fn test_timing_serialization() {
+        let mut buf = String::new();
+        Timing::new("test", 100, TimingResolution::MilliSeconds)
+            .serialize(&Tags::default(), &mut buf);
+        assert_eq!("test|t|100|ms", buf);
+    }
+
+    #[test]
+    fn test_timer_with_tags() {
+        let client = ClientBuilder::default().build(BlackHoleTransport);
+        let timer = client.timer("test").with_tag("t1", "v1");
+
+        assert_eq!(timer.name, "test");
+        assert_eq!(timer.tags.as_ref().unwrap().get("t1").unwrap(), "v1");
+    }
 }

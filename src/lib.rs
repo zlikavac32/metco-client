@@ -4,9 +4,9 @@
 //!
 //! ## Usage
 //!
-//! ```yaml
+//! ```toml
 //! [dependencies]
-//! metco-client = "0.1.0"
+//! metco-client = "0.2"
 //! ```
 //!
 //! ```rust

@@ -6,22 +6,21 @@ pub trait Metric {
     ///
     /// The `tags` parameter contains default tags from the client that should be
     /// included in the serialized output.
-    fn serialize(&self, tags: &Tags, buf: &mut String);
+    fn serialize(&self, tags: &Tags<'_>, buf: &mut String);
 }
 
 /// Macro to provide common tag methods for metric structs.
+///
+/// Expects the struct to have a lifetime named `'a` and a
+/// `tags: Option<Tags<'a>>` field.
 macro_rules! tags_support {
     () => {
         /// Adds multiple tags to the metric.
-        pub fn with_tags(mut self, tags: crate::types::Tags<'a>) -> Self {
-            self.tags = Some(match self.tags {
-                None => tags,
-                Some(mut current_tags) => {
-                    current_tags.extend(tags);
-
-                    current_tags
-                }
-            });
+        pub fn with_tags(mut self, tags: $crate::types::Tags<'a>) -> Self {
+            match &mut self.tags {
+                Some(current_tags) => current_tags.extend(tags),
+                None => self.tags = Some(tags),
+            }
 
             self
         }
@@ -35,19 +34,14 @@ macro_rules! tags_support {
         /// let counter = Counter::new("test", 1)
         ///     .with_tag("version", "1.0");
         /// ```
-        pub fn with_tag<K: Into<std::borrow::Cow<'a, str>>, V: Into<std::borrow::Cow<'a, str>>>(
-            mut self,
-            name: K,
-            value: V,
-        ) -> Self {
-            self.tags = Some(match self.tags {
-                None => crate::types::Tags::from([(name.into(), value.into())]),
-                Some(mut current_tags) => {
-                    current_tags.insert(name.into(), value.into());
-
-                    current_tags
-                }
-            });
+        pub fn with_tag<K, V>(mut self, name: K, value: V) -> Self
+        where
+            K: Into<std::borrow::Cow<'a, str>>,
+            V: Into<std::borrow::Cow<'a, str>>,
+        {
+            self.tags
+                .get_or_insert_with($crate::types::Tags::new)
+                .insert(name.into(), value.into());
 
             self
         }

@@ -2,6 +2,7 @@ use crate::metrics::Metric;
 use crate::types::Tags;
 use crate::utils::serialize_name_and_tags;
 use std::borrow::Cow;
+use std::fmt::Write;
 
 /// A histogram metric.
 ///
@@ -18,6 +19,8 @@ use std::borrow::Cow;
 /// let mut buf = String::new();
 /// hist.serialize(&Tags::default(), &mut buf);
 /// ```
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct Histogram<'a> {
     name: Cow<'a, str>,
     count: u64,
@@ -37,12 +40,11 @@ impl<'a> Histogram<'a> {
     tags_support!();
 }
 
-impl<'a> Metric for Histogram<'a> {
-    fn serialize(&self, tags: &Tags, buf: &mut String) {
+impl Metric for Histogram<'_> {
+    fn serialize(&self, tags: &Tags<'_>, buf: &mut String) {
         serialize_name_and_tags(buf, &self.name, tags, self.tags.as_ref());
 
-        buf.push_str("|h|");
-        buf.push_str(&self.count.to_string());
+        let _ = write!(buf, "|h|{}", self.count);
     }
 }
 
@@ -52,9 +54,8 @@ mod tests {
 
     #[test]
     fn test_histogram_serialization() {
-        let tags = Tags::default();
         let mut buf = String::new();
-        Histogram::new("test", 100).serialize(&tags, &mut buf);
+        Histogram::new("test", 100).serialize(&Tags::default(), &mut buf);
         assert_eq!("test|h|100", buf);
     }
 }

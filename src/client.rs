@@ -3,19 +3,13 @@ use crate::transport::Transport;
 use crate::types::Tags;
 use crate::utils::write_escaped_value;
 use std::borrow::Cow;
-use std::time::Instant;
 
-/// MetCo client for sending metrics over UDP.
+/// MetCo client for sending metrics through a [`Transport`].
+#[derive(Debug)]
 pub struct Client<T> {
     transport: T,
     tags: Tags<'static>,
     prefix: Option<String>,
-}
-
-impl Transport for Box<dyn Transport> {
-    fn send(&self, metric: &str) {
-        self.as_ref().send(metric);
-    }
 }
 
 impl<T: Transport> Client<T> {
@@ -29,16 +23,7 @@ impl<T: Transport> Client<T> {
     /// client.send(Counter::new("requests", 1));
     /// ```
     pub fn send<M: Metric>(&self, metric: M) -> &Self {
-        let mut buf = String::with_capacity(128);
-
-        if let Some(prefix) = &self.prefix {
-            buf.push_str(prefix);
-        }
-
-        metric.serialize(&self.tags, &mut buf);
-        self.transport.send(&buf);
-
-        self
+        self.dispatch(&metric, &self.tags)
     }
 
     /// Sends a metric to the MetCo server with additional tags.
@@ -52,18 +37,22 @@ impl<T: Transport> Client<T> {
     /// tags.insert("env".into(), "prod".into());
     /// client.send_with_tags(Counter::new("requests", 1), tags);
     /// ```
-    pub fn send_with_tags<'a, M: Metric>(&self, metric: M, mut tags: Tags<'a>) -> &Self {
+    pub fn send_with_tags<M: Metric>(&self, metric: M, mut tags: Tags<'_>) -> &Self {
         for (k, v) in &self.tags {
             tags.entry(k.clone()).or_insert_with(|| v.clone());
         }
 
+        self.dispatch(&metric, &tags)
+    }
+
+    fn dispatch<M: Metric>(&self, metric: &M, tags: &Tags<'_>) -> &Self {
         let mut buf = String::with_capacity(128);
 
         if let Some(prefix) = &self.prefix {
             buf.push_str(prefix);
         }
 
-        metric.serialize(&tags, &mut buf);
+        metric.serialize(tags, &mut buf);
         self.transport.send(&buf);
 
         self
@@ -81,12 +70,7 @@ impl<T: Transport> Client<T> {
     /// timer.finish();
     /// ```
     pub fn timer<'a, N: Into<Cow<'a, str>>>(&'a self, name: N) -> Timer<'a, T> {
-        Timer {
-            client: self,
-            now: Instant::now(),
-            name: name.into(),
-            tags: None,
-        }
+        Timer::new(self, name.into())
     }
 
     /// Creates a handle for performing operations on a gauge.
@@ -101,15 +85,13 @@ impl<T: Transport> Client<T> {
     /// gauge.increment(1);
     /// ```
     pub fn gauge<'a, N: Into<Cow<'a, str>>>(&'a self, name: N) -> GaugeHandle<'a, T> {
-        GaugeHandle {
-            client: self,
-            name: name.into(),
-        }
+        GaugeHandle::new(self, name.into())
     }
 }
 
 /// Builder for creating a [`Client`].
-#[derive(Default)]
+#[derive(Debug, Default, Clone)]
+#[must_use]
 pub struct ClientBuilder {
     tags: Tags<'static>,
     prefix: Option<String>,
@@ -125,16 +107,25 @@ impl ClientBuilder {
     /// let builder = ClientBuilder::default()
     ///     .with_tag("app", "api");
     /// ```
-    pub fn with_tag<K: Into<Cow<'static, str>>, V: Into<Cow<'static, str>>>(
-        mut self,
-        name: K,
-        value: V,
-    ) -> Self {
+    pub fn with_tag<K, V>(mut self, name: K, value: V) -> Self
+    where
+        K: Into<Cow<'static, str>>,
+        V: Into<Cow<'static, str>>,
+    {
         self.tags.insert(name.into(), value.into());
 
         self
     }
 
+    /// Sets a prefix prepended to the name of every metric sent by the client.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use metco_client::ClientBuilder;
+    /// let builder = ClientBuilder::default()
+    ///     .with_prefix("app.");
+    /// ```
     pub fn with_prefix<P: Into<String>>(mut self, prefix: P) -> Self {
         self.prefix = Some(prefix.into());
         self
@@ -158,7 +149,7 @@ impl ClientBuilder {
         self
     }
 
-    /// Connects to the MetCo server at the given address.
+    /// Builds a client that sends metrics through the given transport.
     ///
     /// # Examples
     ///
@@ -171,10 +162,8 @@ impl ClientBuilder {
     /// ```
     pub fn build<T: Transport>(self, transport: T) -> Client<T> {
         let prefix = self.prefix.map(|p| {
-            let mut escaped = String::with_capacity(p.len());
-
+            let mut escaped = String::new();
             write_escaped_value(&mut escaped, &p);
-
             escaped
         });
 
@@ -202,7 +191,7 @@ mod tests {
     fn test_prefix_escaping() {
         let client = ClientBuilder::default()
             .with_prefix("app|test.")
-            .build(BlackHoleTransport::default());
+            .build(BlackHoleTransport);
 
         assert_eq!(client.prefix.as_deref(), Some("app\\|test."));
     }

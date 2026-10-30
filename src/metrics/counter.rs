@@ -2,6 +2,7 @@ use crate::metrics::Metric;
 use crate::types::Tags;
 use crate::utils::serialize_name_and_tags;
 use std::borrow::Cow;
+use std::fmt::Write;
 
 /// A counter metric.
 ///
@@ -20,6 +21,8 @@ use std::borrow::Cow;
 /// let mut buf = String::new();
 /// counter.serialize(&Tags::default(), &mut buf);
 /// ```
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct Counter<'a> {
     name: Cow<'a, str>,
     count: u64,
@@ -39,12 +42,11 @@ impl<'a> Counter<'a> {
     tags_support!();
 }
 
-impl<'a> Metric for Counter<'a> {
-    fn serialize(&self, tags: &Tags, buf: &mut String) {
+impl Metric for Counter<'_> {
+    fn serialize(&self, tags: &Tags<'_>, buf: &mut String) {
         serialize_name_and_tags(buf, &self.name, tags, self.tags.as_ref());
 
-        buf.push_str("|c|");
-        buf.push_str(&self.count.to_string());
+        let _ = write!(buf, "|c|{}", self.count);
     }
 }
 
@@ -54,9 +56,8 @@ mod tests {
 
     #[test]
     fn test_counter_serialization() {
-        let tags = Tags::default();
         let mut buf = String::new();
-        Counter::new("test", 10).serialize(&tags, &mut buf);
+        Counter::new("test", 10).serialize(&Tags::default(), &mut buf);
         assert_eq!("test|c|10", buf);
     }
 }
