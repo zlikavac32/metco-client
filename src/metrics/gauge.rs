@@ -1,20 +1,26 @@
 use crate::client::Client;
 use crate::metrics::Metric;
 use crate::transport::Transport;
-use crate::types::Tags;
+use crate::types::{NonEmptyStr, Tags};
 use crate::utils::serialize_name_and_tags;
-use std::borrow::Cow;
+use std::fmt::Write;
 
 /// Represents an operation to be performed on a gauge.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GaugeOperation {
     /// Sets the gauge to an absolute value.
     Set(i64),
     /// Removes the gauge.
     Remove,
     /// Increments the gauge by a relative value.
+    ///
+    /// A negative value is sent as a decrement. `i64::MIN` is sent as a
+    /// decrement by `i64::MAX`, the largest change MetCo accepts.
     Increment(i64),
     /// Decrements the gauge by a relative value.
+    ///
+    /// A negative value is sent as an increment. `i64::MIN` is sent as an
+    /// increment by `i64::MAX`, the largest change MetCo accepts.
     Decrement(i64),
 }
 
@@ -25,25 +31,28 @@ pub enum GaugeOperation {
 /// # Examples
 ///
 /// ```rust
+/// # use metco_client::non_empty;
 /// use metco_client::{Gauge, GaugeOperation, Tags};
 /// # use metco_client::Metric;
 ///
-/// let gauge = Gauge::new("active_sessions", GaugeOperation::Set(100));
+/// let gauge = Gauge::new(non_empty!("active_sessions"), GaugeOperation::Set(100));
 ///
 /// let mut buf = String::new();
 /// gauge.serialize(&Tags::default(), &mut buf);
 /// ```
+#[derive(Debug, Clone)]
+#[must_use]
 pub struct Gauge<'a> {
-    name: Cow<'a, str>,
+    name: NonEmptyStr<'a>,
     operation: GaugeOperation,
     tags: Option<Tags<'a>>,
 }
 
 impl<'a> Gauge<'a> {
     /// Creates a new gauge with the given name and operation.
-    pub fn new<T: Into<Cow<'a, str>>>(name: T, operation: GaugeOperation) -> Self {
+    pub fn new(name: NonEmptyStr<'a>, operation: GaugeOperation) -> Self {
         Self {
-            name: name.into(),
+            name,
             operation,
             tags: None,
         }
@@ -52,115 +61,83 @@ impl<'a> Gauge<'a> {
     tags_support!();
 }
 
-impl<'a> Metric for Gauge<'a> {
-    fn serialize(&self, tags: &Tags, buf: &mut String) {
+impl Metric for Gauge<'_> {
+    fn serialize(&self, tags: &Tags<'_>, buf: &mut String) {
         serialize_name_and_tags(buf, &self.name, tags, self.tags.as_ref());
 
         buf.push_str("|g|");
 
-        match self.operation {
-            GaugeOperation::Set(value) => buf.push_str(&value.to_string()),
-            GaugeOperation::Remove => buf.push('x'),
-            GaugeOperation::Increment(value) => {
-                buf.push_str("+=");
-                buf.push_str(&value.to_string());
-            }
-            GaugeOperation::Decrement(value) => {
-                buf.push_str("-=");
-                buf.push_str(&value.to_string());
-            }
-        }
+        let _ = match self.operation {
+            GaugeOperation::Set(value) => write!(buf, "{value}"),
+            GaugeOperation::Remove => buf.write_char('x'),
+            GaugeOperation::Increment(delta) => write_delta(buf, delta < 0, delta.unsigned_abs()),
+            GaugeOperation::Decrement(delta) => write_delta(buf, delta >= 0, delta.unsigned_abs()),
+        };
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::transport::UdpTransport;
+/// Writes a relative change as `+=N` or `-=N`, keeping `N` unsigned.
+///
+/// MetCo parses `N` as an `i64`, so the magnitude is capped at `i64::MAX`.
+fn write_delta(buf: &mut String, negative: bool, magnitude: u64) -> std::fmt::Result {
+    let sign = if negative { '-' } else { '+' };
+    let magnitude = magnitude.min(i64::MAX.unsigned_abs());
 
-    fn serialize_to_string(gauge: Gauge, tags: &Tags) -> String {
-        let mut buf = String::new();
-        gauge.serialize(tags, &mut buf);
-        buf
-    }
-
-    #[test]
-    fn test_gauge_serialization() {
-        let tags = Tags::default();
-
-        assert_eq!(
-            "test|g|123",
-            serialize_to_string(Gauge::new("test", GaugeOperation::Set(123)), &tags)
-        );
-        assert_eq!(
-            "test|g|-123",
-            serialize_to_string(Gauge::new("test", GaugeOperation::Set(-123)), &tags)
-        );
-        assert_eq!(
-            "test|g|x",
-            serialize_to_string(Gauge::new("test", GaugeOperation::Remove), &tags)
-        );
-        assert_eq!(
-            "test|g|+=10",
-            serialize_to_string(Gauge::new("test", GaugeOperation::Increment(10)), &tags)
-        );
-        assert_eq!(
-            "test|g|-=10",
-            serialize_to_string(Gauge::new("test", GaugeOperation::Decrement(10)), &tags)
-        );
-    }
-
-    #[test]
-    fn test_gauge_handle_name() {
-        use crate::ClientBuilder;
-        let client =
-            ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 0)).unwrap());
-        let handle = client.gauge("test_gauge");
-        assert_eq!(handle.name, "test_gauge");
-    }
+    write!(buf, "{sign}={magnitude}")
 }
 
 /// A handle for performing operations on a gauge.
 ///
 /// Created via [`Client::gauge`](crate::Client::gauge).
+#[derive(Debug)]
 pub struct GaugeHandle<'a, T> {
-    pub(crate) client: &'a Client<T>,
-    pub(crate) name: Cow<'a, str>,
+    client: &'a Client<T>,
+    name: NonEmptyStr<'a>,
 }
 
 impl<'a, T: Transport> GaugeHandle<'a, T> {
+    pub(crate) fn new(client: &'a Client<T>, name: NonEmptyStr<'a>) -> Self {
+        Self { client, name }
+    }
+
+    fn apply(&self, operation: GaugeOperation, tags: Option<Tags<'_>>) {
+        let gauge = Gauge::new(self.name.borrowed(), operation);
+
+        match tags {
+            Some(tags) => self.client.send(gauge.with_tags(tags)),
+            None => self.client.send(gauge),
+        };
+    }
+
     /// Sets the gauge to the given value.
     ///
     /// # Examples
     ///
     /// ```rust
+    /// # use metco_client::non_empty;
     /// # use metco_client::ClientBuilder;
     /// # use metco_client::transport::UdpTransport;
     /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
-    /// let gauge = client.gauge("temperature");
+    /// let gauge = client.gauge(non_empty!("temperature"));
     /// gauge.set(25);
     /// ```
     pub fn set(&self, value: i64) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Set(value)));
+        self.apply(GaugeOperation::Set(value), None);
     }
 
     /// Sets the gauge to the given value with additional tags.
-    pub fn set_with_tags(&self, value: i64, tags: Tags<'a>) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Set(value)).with_tags(tags));
+    pub fn set_with_tags(&self, value: i64, tags: Tags<'_>) {
+        self.apply(GaugeOperation::Set(value), Some(tags));
     }
 
     /// Removes the gauge.
     pub fn remove(&self) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Remove));
+        self.apply(GaugeOperation::Remove, None);
     }
 
     /// Removes the gauge with additional tags.
-    pub fn remove_with_tags(&self, tags: Tags<'a>) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Remove).with_tags(tags));
+    pub fn remove_with_tags(&self, tags: Tags<'_>) {
+        self.apply(GaugeOperation::Remove, Some(tags));
     }
 
     /// Increments the gauge by the given value.
@@ -168,36 +145,171 @@ impl<'a, T: Transport> GaugeHandle<'a, T> {
     /// # Examples
     ///
     /// ```rust
+    /// # use metco_client::non_empty;
     /// # use metco_client::ClientBuilder;
     /// # use metco_client::transport::UdpTransport;
     /// # let client = ClientBuilder::default().build(UdpTransport::connect(([127, 0, 0, 1], 3232)).unwrap());
-    /// let gauge = client.gauge("tasks");
+    /// let gauge = client.gauge(non_empty!("tasks"));
     /// gauge.increment(2);
     /// ```
     pub fn increment(&self, value: i64) {
-        self.client.send(Gauge::new(
-            self.name.clone(),
-            GaugeOperation::Increment(value),
-        ));
+        self.apply(GaugeOperation::Increment(value), None);
     }
 
     /// Increments the gauge by the given value with additional tags.
-    pub fn increment_with_tags(&self, value: i64, tags: Tags<'a>) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Increment(value)).with_tags(tags));
+    pub fn increment_with_tags(&self, value: i64, tags: Tags<'_>) {
+        self.apply(GaugeOperation::Increment(value), Some(tags));
     }
 
     /// Decrements the gauge by the given value.
     pub fn decrement(&self, value: i64) {
-        self.client.send(Gauge::new(
-            self.name.clone(),
-            GaugeOperation::Decrement(value),
-        ));
+        self.apply(GaugeOperation::Decrement(value), None);
     }
 
     /// Decrements the gauge by the given value with additional tags.
-    pub fn decrement_with_tags(&self, value: i64, tags: Tags<'a>) {
-        self.client
-            .send(Gauge::new(self.name.clone(), GaugeOperation::Decrement(value)).with_tags(tags));
+    pub fn decrement_with_tags(&self, value: i64, tags: Tags<'_>) {
+        self.apply(GaugeOperation::Decrement(value), Some(tags));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ClientBuilder;
+    use crate::non_empty;
+    use crate::test_support::{RecordingTransport, serialize, tags};
+
+    #[test]
+    fn test_gauge_serialization() {
+        let cases = [
+            (GaugeOperation::Set(123), "test|g|123"),
+            (GaugeOperation::Set(-123), "test|g|-123"),
+            (GaugeOperation::Set(0), "test|g|0"),
+            (GaugeOperation::Set(i64::MAX), "test|g|9223372036854775807"),
+            (GaugeOperation::Set(i64::MIN), "test|g|-9223372036854775808"),
+            (GaugeOperation::Remove, "test|g|x"),
+            (GaugeOperation::Increment(10), "test|g|+=10"),
+            (GaugeOperation::Decrement(10), "test|g|-=10"),
+            (GaugeOperation::Increment(0), "test|g|+=0"),
+            (GaugeOperation::Decrement(0), "test|g|-=0"),
+            (GaugeOperation::Increment(-10), "test|g|-=10"),
+            (GaugeOperation::Decrement(-10), "test|g|+=10"),
+            (
+                GaugeOperation::Increment(i64::MAX),
+                "test|g|+=9223372036854775807",
+            ),
+            (
+                GaugeOperation::Decrement(i64::MAX),
+                "test|g|-=9223372036854775807",
+            ),
+            (
+                GaugeOperation::Increment(i64::MIN),
+                "test|g|-=9223372036854775807",
+            ),
+            (
+                GaugeOperation::Decrement(i64::MIN),
+                "test|g|+=9223372036854775807",
+            ),
+        ];
+
+        for (operation, expected) in cases {
+            assert_eq!(
+                expected,
+                serialize(&Gauge::new(non_empty!("test"), operation)),
+                "{operation:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_gauge_handle_name() {
+        let client = ClientBuilder::default().build(RecordingTransport::default());
+        let handle = client.gauge(non_empty!("test_gauge"));
+        assert_eq!(handle.name, "test_gauge");
+    }
+
+    #[test]
+    fn test_gauge_handle_operations() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+        let gauge = client.gauge(non_empty!("g"));
+
+        gauge.set(5);
+        gauge.increment(2);
+        gauge.decrement(1);
+        gauge.increment(-3);
+        gauge.remove();
+
+        assert_eq!(
+            transport.sent(),
+            ["g|g|5", "g|g|+=2", "g|g|-=1", "g|g|-=3", "g|g|x"]
+        );
+    }
+
+    #[test]
+    fn test_gauge_handle_operations_with_tags() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+        let gauge = client.gauge(non_empty!("g"));
+
+        gauge.set_with_tags(5, tags(&[("op", "set")]));
+        gauge.increment_with_tags(2, tags(&[("op", "inc")]));
+        gauge.decrement_with_tags(1, tags(&[("op", "dec")]));
+        gauge.remove_with_tags(tags(&[("op", "rm")]));
+
+        assert_eq!(
+            transport.sent(),
+            [
+                "g;op=set|g|5",
+                "g;op=inc|g|+=2",
+                "g;op=dec|g|-=1",
+                "g;op=rm|g|x"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_gauge_handle_uses_client_prefix_and_tags() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default()
+            .with_prefix("app.")
+            .with_tag(non_empty!("env"), non_empty!("prod"))
+            .with_tag(non_empty!("host"), non_empty!("a"))
+            .build(&transport);
+        let gauge = client.gauge(non_empty!("g"));
+
+        gauge.set(1);
+        gauge.set_with_tags(2, tags(&[("host", "b")]));
+
+        assert_eq!(
+            transport.sent(),
+            ["app.g;env=prod;host=a|g|1", "app.g;env=prod;host=b|g|2"]
+        );
+    }
+
+    #[test]
+    fn test_gauge_handle_is_reusable_with_owned_name() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+        let gauge = client.gauge(NonEmptyStr::new(format!("g{}", 1)).unwrap());
+
+        gauge.set(1);
+        gauge.set(2);
+
+        assert_eq!(transport.sent(), ["g1|g|1", "g1|g|2"]);
+    }
+
+    #[test]
+    fn test_gauge_handle_tags_can_be_short_lived() {
+        let transport = RecordingTransport::default();
+        let client = ClientBuilder::default().build(&transport);
+        let gauge = client.gauge(non_empty!("g"));
+
+        for i in 0..2 {
+            let value = i.to_string();
+            gauge.set_with_tags(i, tags(&[("i", &value)]));
+        }
+
+        assert_eq!(transport.sent(), ["g;i=0|g|0", "g;i=1|g|1"]);
     }
 }
